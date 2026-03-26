@@ -38,12 +38,14 @@ EXPORT_FIELDS = (
     "opened_at,u_breach_reason,u_breach_comments,calendar_stc,sys_tags"
 )
 
+_ROOT = Path(__file__).parent.parent
+
 # Saved session file (stores cookies so SSO only happens once)
-SESSION_FILE = Path(".servicenow_session.json")
+SESSION_FILE = _ROOT / ".servicenow_session.json"
 
 # Output paths
-OUTPUT_CSV  = Path("reports/Incidents_list.csv")
-BACKUP_CSV  = Path("reports/Incidents_list_backup.csv")
+OUTPUT_CSV  = _ROOT / "reports" / "Incidents_list.csv"
+BACKUP_CSV  = _ROOT / "reports" / "Incidents_list_backup.csv"
 
 # ──────────────────────────────────────────────────────────────────────────────
 

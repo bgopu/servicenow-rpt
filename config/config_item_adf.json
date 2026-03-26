@@ -1,0 +1,22 @@
+{
+  "adf_instances": [
+    {
+      "subscription_id": "1cf403ac-f17f-4b8e-9d65-1f53af150958",
+      "resource_group":  "rg-mditem-prod-xwbj",
+      "adf_name":        "adf-mditem-prod-xwbj",
+      "env":             "prod"
+    },
+    {
+      "subscription_id": "07ae5604-ed2a-4810-a0e2-c864b3265599",
+      "resource_group":  "cp-rg-mditem-prod-kc",
+      "adf_name":        "cp-adf-mditem-prod-kc",
+      "env":             "cp-prod"
+    },
+    {
+      "subscription_id": "58760212-82e8-4382-b582-bc0e127364d2",
+      "resource_group":  "if-rg-mditem-prod-fw",
+      "adf_name":        "if-adf-mditem-prod-fw",
+      "env":             "if"
+    }
+  ]
+}

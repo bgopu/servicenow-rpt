@@ -15,13 +15,13 @@ set /p choice="Choose option (1-4): "
 call .venv\Scripts\activate.bat
 
 if "%choice%"=="1" (
-    python servicenow_downloader.py
+    python src\servicenow_downloader.py
 ) else if "%choice%"=="2" (
-    python servicenow_downloader.py --upload-to-sharepoint
+    python src\servicenow_downloader.py --upload-to-sharepoint
 ) else if "%choice%"=="3" (
-    python sharepoint_uploader.py
+    python src\sharepoint_uploader.py
 ) else if "%choice%"=="4" (
-    python main.py --input reports\Incidents_list.csv
+    python src\main.py --input reports\Incidents_list.csv
     for /f %%i in ('dir /b /od reports\ServicenowReport_WW*.html') do set LATEST=%%i
     start reports\%LATEST%
 ) else (

@@ -17,7 +17,7 @@ except ImportError:
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 
-CONFIG_FILE = Path("config_sharepoint.json")
+CONFIG_FILE = Path(__file__).parent.parent / "config" / "config_sharepoint.json"
 
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -148,8 +148,12 @@ def build_yoy_html() -> str:
             if d.startswith('iao') or ' iao ' in d:
                 return True
             return is_iao_prefix
+
+        if desc_col and ag_col:
+            is_platform = df_2026[ag_col].isin(["ICC L0", "ESD S2P Technical L1"])
+            is_iao_series = df_2026[desc_col].apply(_is_iao)
             iao_excl_platform = int((is_iao_series & ~is_platform).sum())
-        non_iao_excl_platform = total_2026 - platform_outage - iao_excl_platform
+        non_iao_excl_platform = cds_ror - iao_excl_platform
 
         # Dynamic month range e.g. "Jan - Mar"
         latest_month = df_2026["_opened"].max().strftime("%b") if not df_2026.empty else "Dec"

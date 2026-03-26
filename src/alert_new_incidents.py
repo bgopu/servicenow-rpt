@@ -24,10 +24,11 @@ import pandas as pd
 import pytz
 
 WIKI_ROSTER_URL = "https://wiki.ith.intel.com/spaces/EnterpriseDaaS/pages/3027366462/L3+On-Call+Support+Duty+Roster"
-WIKI_SESSION_FILE = Path(".wiki_session.json")
+_ROOT = Path(__file__).parent.parent
+WIKI_SESSION_FILE = _ROOT / ".wiki_session.json"
 SNOW_BASE = "https://intel.service-now.com"
-CONFIG_FILE = Path("config_sharepoint.json")
-CSV_FILE = Path("reports/Incidents_list.csv")
+CONFIG_FILE = _ROOT / "config" / "config_sharepoint.json"
+CSV_FILE = _ROOT / "reports" / "Incidents_list.csv"
 
 IST = pytz.timezone("Asia/Kolkata")
 
@@ -74,7 +75,7 @@ async def fetch_roster_html(headed: bool = False) -> str | None:
 
         # Try loading saved session (from ServiceNow downloader or previous wiki login)
         storage = None
-        for sess_file in [WIKI_SESSION_FILE, Path(".servicenow_session.json")]:
+        for sess_file in [WIKI_SESSION_FILE, _ROOT / ".servicenow_session.json"]:
             if sess_file.exists():
                 with open(sess_file) as f:
                     storage = json.load(f)
@@ -293,8 +294,20 @@ def parse_oncall_for_ww(html: str, target_ww: int) -> str | None:
 
 # ─── Incident filtering ────────────────────────────────────────────────────────
 
-def get_new_incidents(days: int = 8) -> pd.DataFrame:
-    """Return New-state incidents opened in the last N days from the CSV."""
+OPEN_STATES = ["new", "in progress", "on hold"]
+
+
+def current_quarter_start(dt: datetime = None) -> datetime:
+    """Return the first day of the current quarter (IST) as a naive datetime."""
+    if dt is None:
+        dt = datetime.now(IST)
+    month = dt.month
+    q_start_month = ((month - 1) // 3) * 3 + 1
+    return datetime(dt.year, q_start_month, 1)
+
+
+def get_new_incidents(quarter_only: bool = True) -> pd.DataFrame:
+    """Return open incidents (New / In Progress / On Hold) from the CSV."""
     if not CSV_FILE.exists():
         print(f"❌ {CSV_FILE} not found. Run servicenow_downloader.py first.")
         sys.exit(1)
@@ -313,25 +326,27 @@ def get_new_incidents(days: int = 8) -> pd.DataFrame:
     if date_col:
         df["_opened"] = pd.to_datetime(df[date_col], format="ISO8601", errors="coerce")
     else:
-        print("⚠️  No 'opened' date column found — returning all New incidents.")
+        print("⚠️  No 'opened' date column found — returning all open incidents.")
         df["_opened"] = pd.NaT
 
-    cutoff = datetime.now() - timedelta(days=days)
-    if df["_opened"].notna().any():
-        df = df[df["_opened"] >= cutoff]
+    # Apply quarter filter (default) or show all open incidents
+    if quarter_only and df["_opened"].notna().any():
+        q_start = current_quarter_start()
+        df = df[df["_opened"] >= q_start]
 
+    # Filter by open states
     if state_col:
-        df = df[df[state_col].str.strip().str.lower() == "new"]
+        df = df[df[state_col].str.strip().str.lower().isin(OPEN_STATES)]
 
     # Sort newest first
     df = df.sort_values("_opened", ascending=False)
 
     # Select only useful display columns
-    keep = [c for c in [num_col, desc_col, state_col, pri_col, ag_col, owner_col, date_col] if c]
+    keep = [c for c in [num_col, state_col, desc_col, pri_col, ag_col, owner_col, date_col] if c]
     rename_map = {}
     if num_col:   rename_map[num_col]   = "Number"
-    if desc_col:  rename_map[desc_col]  = "Short Description"
     if state_col: rename_map[state_col] = "State"
+    if desc_col:  rename_map[desc_col]  = "Short Description"
     if pri_col:   rename_map[pri_col]   = "Priority"
     if ag_col:    rename_map[ag_col]    = "Assignment Group"
     if owner_col: rename_map[owner_col] = "Owner"
@@ -341,12 +356,14 @@ def get_new_incidents(days: int = 8) -> pd.DataFrame:
 
 # ─── Email builder ─────────────────────────────────────────────────────────────
 
-def build_alert_email(incidents_df: pd.DataFrame, roster_html: str | None, days: int) -> str:
+def build_alert_email(incidents_df: pd.DataFrame, roster_html: str | None, quarter_only: bool = True) -> str:
     today = datetime.now(IST)
     ww = get_intel_ww(today)
-    since = (today - timedelta(days=days)).strftime("%b %d, %Y")
     now_str = today.strftime("%B %d, %Y at %I:%M %p IST")
     count = len(incidents_df)
+    q_start = current_quarter_start(today)
+    quarter_num = (today.month - 1) // 3 + 1
+    period_label = f"Q{quarter_num} {today.year} (since {q_start.strftime('%b %d')})" if quarter_only else "All Open"
 
     oncall_name = parse_oncall_from_html(roster_html) if roster_html else None
     oncall_html = (
@@ -376,7 +393,7 @@ def build_alert_email(incidents_df: pd.DataFrame, roster_html: str | None, days:
             ww_oncall_str = ww_oncall if ww_oncall else "Not on record"
             table_rows += f"""
         <tr style="background:#e3f2fd;">
-          <td colspan="6" style="padding:7px 12px;">
+          <td colspan="8" style="padding:7px 12px;">
             <span style="font-size:12px;font-weight:700;color:#1565c0;text-transform:uppercase;
                          letter-spacing:0.4px;">WW{ww_num:02d}</span>
             &nbsp;&nbsp;
@@ -389,32 +406,59 @@ def build_alert_email(incidents_df: pd.DataFrame, roster_html: str | None, days:
                 pri = str(row.get("Priority", ""))
                 pri_color = "#c62828" if "2 - High" in pri or "1 - " in pri else ("#e65100" if "3 - Mod" in pri else "#555")
                 opened = str(row.get("Opened", ""))[:16]
+                try:
+                    opened_dt = pd.to_datetime(row.get("Opened", ""), errors="coerce")
+                    days_open = (datetime.now() - opened_dt.replace(tzinfo=None)).days if pd.notna(opened_dt) else "-"
+                except Exception:
+                    days_open = "-"
+                if isinstance(days_open, int):
+                    if days_open >= 14:
+                        days_color = "#c62828"
+                    elif days_open >= 7:
+                        days_color = "#e65100"
+                    else:
+                        days_color = "#2e7d32"
+                else:
+                    days_color = "#888"
                 desc = str(row.get("Short Description", ""))[:80]
                 ag = str(row.get("Assignment Group", ""))
                 assigned = str(row.get("Owner", "")).strip()
                 owner = assigned if assigned and assigned.lower() not in ("nan", "none", "") else ww_oncall_str
+                state_val = str(row.get("State", "")).strip()
+                state_lower = state_val.lower()
+                if state_lower == "in progress":
+                    state_bg, state_fg = "#fff3e0", "#e65100"
+                elif state_lower == "on hold":
+                    state_bg, state_fg = "#f3e5f5", "#6a1b9a"
+                else:  # new
+                    state_bg, state_fg = "#e3f2fd", "#1565c0"
                 table_rows += f"""
         <tr style="border-bottom:1px solid #f0f0f0;">
           <td style="padding:8px 10px;font-size:13px;">
             <a href="{snow_url}" target="_blank"
                style="color:#1a73e8;font-weight:700;text-decoration:underline;">{num}</a>
           </td>
+          <td style="padding:6px 10px;white-space:nowrap;">
+            <span style="background:{state_bg};color:{state_fg};font-size:11px;font-weight:700;
+                         padding:2px 7px;border-radius:3px;">{state_val}</span>
+          </td>
           <td style="padding:8px 10px;font-size:13px;color:#333;">{desc}</td>
           <td style="padding:8px 10px;font-size:13px;font-weight:700;color:{pri_color};">{pri}</td>
           <td style="padding:8px 10px;font-size:13px;color:#555;">{ag}</td>
           <td style="padding:8px 10px;font-size:13px;color:#444;">{owner}</td>
+          <td style="padding:8px 10px;font-size:13px;font-weight:700;color:{days_color};text-align:center;white-space:nowrap;">{days_open}d</td>
           <td style="padding:8px 10px;font-size:12px;color:#888;white-space:nowrap;">{opened}</td>
         </tr>"""
     else:
         table_rows = """
         <tr>
-          <td colspan="6" style="padding:20px;text-align:center;color:#4caf50;font-weight:700;">
-            ✅ No New incidents in this period
+          <td colspan="8" style="padding:20px;text-align:center;color:#4caf50;font-weight:700;">
+            ✅ No open incidents
           </td>
         </tr>"""
 
     status_color = "#c62828" if count > 0 else "#2e7d32"
-    status_label = f"{count} New Incident{'s' if count != 1 else ''}" if count > 0 else "No New Incidents"
+    status_label = f"{count} Open Incident{'s' if count != 1 else ''}" if count > 0 else "No Open Incidents"
 
     return f"""<!DOCTYPE html>
 <html>
@@ -428,12 +472,12 @@ def build_alert_email(incidents_df: pd.DataFrame, roster_html: str | None, days:
 
     <!-- header -->
     <tr>
-      <td bgcolor="#b71c1c" style="padding:22px 28px;background-color:#b71c1c;">
+      <td bgcolor="#c0392b" style="padding:22px 28px;background-color:#c0392b;">
         <p style="margin:0;font-size:19px;font-weight:700;color:#fff;">
-          &#9888;&#65039; CDS ROR — Incidents in New State
+          &#9888;&#65039; CDS ROR — Open Incidents
         </p>
         <p style="margin:4px 0 0 0;font-size:13px;color:#ffcdd2;">
-          WW{ww:02d} &nbsp;|&nbsp; Incidents opened since {since}
+          WW{ww:02d} &nbsp;|&nbsp; {period_label} &nbsp;&bull;&nbsp; New &bull; In Progress &bull; On Hold
         </p>
       </td>
     </tr>
@@ -463,7 +507,7 @@ def build_alert_email(incidents_df: pd.DataFrame, roster_html: str | None, days:
     <tr>
       <td style="padding:18px 28px 10px 28px;">
         <p style="margin:0;font-size:13px;font-weight:700;color:{status_color};">
-          &#128204; {status_label} in the past {days} day{'s' if days != 1 else ''}
+          &#128204; {status_label} &nbsp;&mdash;&nbsp; {period_label}
         </p>
       </td>
     </tr>
@@ -480,6 +524,10 @@ def build_alert_email(incidents_df: pd.DataFrame, roster_html: str | None, days:
                 Incident #
               </th>
               <th style="padding:9px 10px;text-align:left;font-size:12px;color:#fff;
+                          font-weight:700;text-transform:uppercase;letter-spacing:0.4px;white-space:nowrap;">
+                State
+              </th>
+              <th style="padding:9px 10px;text-align:left;font-size:12px;color:#fff;
                           font-weight:700;text-transform:uppercase;letter-spacing:0.4px;">
                 Description
               </th>
@@ -494,6 +542,10 @@ def build_alert_email(incidents_df: pd.DataFrame, roster_html: str | None, days:
               <th style="padding:9px 10px;text-align:left;font-size:12px;color:#fff;
                           font-weight:700;text-transform:uppercase;letter-spacing:0.4px;white-space:nowrap;">
                 Owner
+              </th>
+              <th style="padding:9px 10px;text-align:center;font-size:12px;color:#fff;
+                          font-weight:700;text-transform:uppercase;letter-spacing:0.4px;white-space:nowrap;">
+                Days Open
               </th>
               <th style="padding:9px 10px;text-align:left;font-size:12px;color:#fff;
                           font-weight:700;text-transform:uppercase;letter-spacing:0.4px;white-space:nowrap;">
@@ -525,7 +577,7 @@ def build_alert_email(incidents_df: pd.DataFrame, roster_html: str | None, days:
 
 # ─── Email send ────────────────────────────────────────────────────────────────
 
-def send_alert_email(html_body: str, count: int, days: int) -> bool:
+def send_alert_email(html_body: str, count: int, quarter_only: bool = True) -> bool:
     try:
         import win32com.client as win32
     except ImportError:
@@ -537,8 +589,11 @@ def send_alert_email(html_body: str, count: int, days: int) -> bool:
         print("❌ No recipients in config_sharepoint.json → email.recipients")
         return False
 
+    today = datetime.now(IST)
     ww = get_intel_ww()
-    subject = f"⚠️ CDS ROR — {count} Incident{'s' if count != 1 else ''} in New State (Last {days} Days) | WW{ww:02d}"
+    quarter_num = (today.month - 1) // 3 + 1
+    period = f"Q{quarter_num} {today.year}" if quarter_only else "All Open"
+    subject = f"⚠️ CDS ROR — {count} Open Incident{'s' if count != 1 else ''} | {period} | WW{ww:02d}"
 
     print(f"📧 Sending alert via Outlook…")
     print(f"   To      : {', '.join(recipients)}")
@@ -562,22 +617,27 @@ def send_alert_email(html_body: str, count: int, days: int) -> bool:
 # ─── Main ──────────────────────────────────────────────────────────────────────
 
 async def main():
-    parser = argparse.ArgumentParser(description="Alert email for new incidents in the past N days")
-    parser.add_argument("--days", type=int, default=8, help="Look-back window in days (default: 8)")
+    parser = argparse.ArgumentParser(description="Alert email for open incidents in the current quarter")
+    parser.add_argument("--all", action="store_true", help="Show all open incidents (ignore quarter filter)")
     parser.add_argument("--no-wiki", action="store_true", help="Skip wiki roster fetch")
     args = parser.parse_args()
+    quarter_only = not args.all
 
     print(f"\n{'='*60}")
-    print(f"  🚨 CDS ROR — Incidents in New State")
+    print(f"  🚨 CDS ROR — Open Incidents (New / In Progress / On Hold)")
     print(f"{'='*60}")
-    print(f"  Look-back : Last {args.days} days")
+    q_start = current_quarter_start()
+    quarter_num = (datetime.now(IST).month - 1) // 3 + 1
+    period_str = f"Q{quarter_num} {datetime.now(IST).year} (from {q_start.strftime('%b %d, %Y')})" if quarter_only else "All time"
+    print(f"  States    : New, In Progress, On Hold")
+    print(f"  Period    : {period_str}")
     print(f"  Data file : {CSV_FILE}")
     print(f"{'='*60}\n")
 
     # ── Step 1: Filter incidents ───────────────────────────────────────────
-    print(f"🔍 Filtering New incidents from the past {args.days} days…")
-    incidents = get_new_incidents(days=args.days)
-    print(f"   Found {len(incidents)} New incident(s)\n")
+    print(f"🔍 Filtering open incidents (New / In Progress / On Hold)…")
+    incidents = get_new_incidents(quarter_only=quarter_only)
+    print(f"   Found {len(incidents)} open incident(s)\n")
 
     # ── Step 2: Fetch on-call roster ──────────────────────────────────────
     roster_html = None
@@ -597,8 +657,8 @@ async def main():
 
     # ── Step 3: Build & send email ────────────────────────────────────────
     print("📧 Building alert email…")
-    html_body = build_alert_email(incidents, roster_html, args.days)
-    send_alert_email(html_body, len(incidents), args.days)
+    html_body = build_alert_email(incidents, roster_html, quarter_only)
+    send_alert_email(html_body, len(incidents), quarter_only)
 
 
 if __name__ == "__main__":

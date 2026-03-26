@@ -23,8 +23,8 @@ from playwright.async_api import async_playwright
 
 # ─── CONFIG (reads from config_sharepoint.json) ────────────────────────────
 
-CONFIG_FILE   = Path("config_sharepoint.json")
-SESSION_FILE  = Path(".sharepoint_session.json")
+CONFIG_FILE   = Path(__file__).parent.parent / "config" / "config_sharepoint.json"
+SESSION_FILE  = Path(__file__).parent.parent / ".sharepoint_session.json"
 
 with open(CONFIG_FILE) as f:
     _cfg = json.load(f)["sharepoint"]
@@ -34,18 +34,18 @@ SP_INPUT_FOLDER = _cfg["input_folder"]                                   # .../S
 SP_OUTPUT_FOLDER = _cfg["output_folder"]                                 # .../Reports
 
 # Local files to upload
-CSV_FILE    = Path("reports/Incidents_list.csv")
+CSV_FILE    = Path(__file__).parent.parent / "reports" / "Incidents_list.csv"
 
-# ──────────────────────────────────────────────────────────────────────────────
+_REPORTS_DIR = Path(__file__).parent.parent / "reports"
 
 
 def latest_report() -> Path | None:
     reports = sorted(
-        glob.glob("reports/ServicenowReport_WW*.html"),
-        key=os.path.getmtime,
+        _REPORTS_DIR.glob("ServicenowReport_WW*.html"),
+        key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
-    return Path(reports[0]) if reports else None
+    return reports[0] if reports else None
 
 
 def print_banner():

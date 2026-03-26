@@ -76,52 +76,77 @@ class IncidentAnalyzer:
         return job_part
 
     def _extract_domain(self, description: str) -> str:
-        """Extract domain from job name in description."""
+        """Extract functional master-data domain (same logic as report_generator._extract_domain_simple)."""
         if pd.isna(description):
             return 'other'
-        
+
         desc_lower = str(description).lower()
         bare = self._job_bare_name(desc_lower)
-        
-        # Check IBDS first — but only if NOT an IAO-prefixed (cp/ip/if) job
         is_iao_prefix = any(bare.startswith(p) for p in ('cp', 'ip', 'if'))
+
+        # For cp/ip/if IAO jobs: derive functional domain from sub-domain logic
+        if is_iao_prefix:
+            sub = self._extract_sub_domain(description)
+            return sub.lower() if sub else 'other'
+
+        # IBDS (non-IAO prefix only)
         has_ibds = any(pattern in desc_lower for pattern in self.DOMAIN_PATTERNS['ibds'])
-        if has_ibds and not is_iao_prefix:
+        if has_ibds:
             return 'ibds'
-        
-        # IAO: literal "iao" in description OR job name starts with cp/ip/if
-        if desc_lower.startswith('iao') or ' iao ' in desc_lower or is_iao_prefix:
-            return 'iao'
-        
-        # Check specific finance patterns: finmdg, mdgfin, finfxmdging, finlmdging, mdgs4fin
+
+        # Pattern-based detection (covers plain IAO-labelled and non-IAO jobs)
         if 'finmdg' in desc_lower or 'mdgfin' in desc_lower or 'finfxmdg' in desc_lower or 'finlmdg' in desc_lower or 'mdgs4fin' in desc_lower:
             return 'finance'
-        
-        # Check customer patterns before mdg: cusmdg, mdgcus, entity, entflt, merge
         if 'cusmdg' in desc_lower or 'mdgcus' in desc_lower or 'entity' in desc_lower or 'entflt' in desc_lower or 'merge' in desc_lower:
             return 'customer'
-        
-        # Check supplier patterns before mdg: supmdg
         if 'supmdg' in desc_lower:
             return 'supplier'
-        
-        # Check Reference (mdg patterns) - after specific domain checks
         if any(pattern in desc_lower for pattern in self.DOMAIN_PATTERNS['reference']):
             return 'reference'
-        
-        # Check Finance after Reference to avoid mdgfin being classified as Finance
         if any(pattern in desc_lower for pattern in self.DOMAIN_PATTERNS['finance']):
             return 'finance'
-        
-        # Check each domain pattern
         for domain, patterns in self.DOMAIN_PATTERNS.items():
             if domain in ['other', 'ibds', 'iao', 'reference', 'finance']:
                 continue
             for pattern in patterns:
                 if pattern in desc_lower:
                     return domain
-        
         return 'other'
+
+    def _extract_sub_domain(self, description: str) -> str:
+        """For cp/ip/if IAO jobs, return the functional sub-domain label (internal use)."""
+        if pd.isna(description):
+            return ''
+        desc_lower = str(description).lower()
+        bare = self._job_bare_name(desc_lower)
+        iao_prefix = next((p for p in ('cp', 'ip', 'if') if bare.startswith(p)), None)
+        if not iao_prefix:
+            return ''
+        if 'ibds' in desc_lower:
+            return 'IBDS'
+        remainder = bare[len(iao_prefix):]
+        if 'finmdg' in remainder or 'mdgfin' in remainder or 'finfxmdg' in remainder or 'finlmdg' in remainder or 'mdgs4fin' in remainder: return 'Finance'
+        if 'cusmdg' in remainder or 'entity' in remainder or 'entflt' in remainder or 'merge' in remainder: return 'Customer'
+        if 'supmdg' in remainder: return 'Supplier'
+        if any(x in remainder for x in ['mdg', 'mdgloc', 'mdgcom', 'mdgs4', 'locanl', 'calendar', 'cal', 'ref', 'mdref']): return 'Reference'
+        if any(x in remainder for x in ['fin', 'finance', 'gfinfx', 'finfx']): return 'Finance'
+        if any(x in remainder for x in ['wrkr', 'worker']): return 'Worker'
+        if any(x in remainder for x in ['cus', 'customer', 'cusanl', 'actvt', 'rdmingst', 'rltn']): return 'Customer'
+        if any(x in remainder for x in ['sup', 'supplier', 'supanl', 'rltsup']): return 'Supplier'
+        if any(x in remainder for x in ['item', 'mditem', 'xedm']): return 'Item'
+        if any(x in remainder for x in ['rpt', 'report']): return 'Reporting'
+        return 'Other'
+
+    def _extract_category(self, description: str) -> str:
+        """Returns 'iao' if IAO-owned, else 'non iao'."""
+        if pd.isna(description):
+            return 'non iao'
+        desc_lower = str(description).lower()
+        bare = self._job_bare_name(desc_lower)
+        is_iao_prefix = any(bare.startswith(p) for p in ('cp', 'ip', 'if'))
+        if desc_lower.startswith('iao') or ' iao ' in desc_lower or is_iao_prefix:
+            return 'iao'
+        return 'non iao'
     
     def get_top_issues(self, months: int = 3, top_n: int = 10) -> pd.DataFrame:
         """
