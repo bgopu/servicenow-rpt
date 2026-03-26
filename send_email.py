@@ -126,11 +126,30 @@ def build_yoy_html() -> str:
             platform_outage = len(df_2026[df_2026[ag_col].isin(["ICC L0", "ESD S2P Technical L1"])])
         cds_ror = total_2026 - platform_outage
 
-        # IAO count for 2026
+        # IAO / Non-IAO split excluding platform outage
+        # Uses same domain logic as report_generator: strip azmcd/azm prefix, check bare name starts with cp/ip/if
         desc_col = next((c for c in df_2026.columns if "short" in c.lower() or "description" in c.lower()), None)
-        iao_count = 0
-        if desc_col:
-            iao_count = int(df_2026[desc_col].str.lower().str.startswith('iao', na=False).sum())
+        iao_excl_platform = 0
+
+        def _is_iao(desc):
+            if pd.isna(desc):
+                return False
+            d = str(desc).lower()
+            job_part = d.split('^')[0].strip()
+            for pfx in ('azmcd', 'azmxd', 'azm'):
+                if job_part.startswith(pfx):
+                    job_part = job_part[len(pfx):]
+                    break
+            is_iao_prefix = any(job_part.startswith(p) for p in ('cp', 'ip', 'if'))
+            # IBDS without IAO prefix → not IAO; IBDS with cp/ip/if prefix → IAO
+            has_ibds = any(x in d for x in ['ibds', 'ibdsingst', 'cpibdsingst'])
+            if has_ibds and not is_iao_prefix:
+                return False
+            if d.startswith('iao') or ' iao ' in d:
+                return True
+            return is_iao_prefix
+            iao_excl_platform = int((is_iao_series & ~is_platform).sum())
+        non_iao_excl_platform = total_2026 - platform_outage - iao_excl_platform
 
         # Dynamic month range e.g. "Jan - Mar"
         latest_month = df_2026["_opened"].max().strftime("%b") if not df_2026.empty else "Dec"
@@ -149,6 +168,16 @@ def build_yoy_html() -> str:
             <tr>
               <td style="font-size:13px;color:#555;padding:7px 0;border-bottom:1px solid #f0f0f0;border-collapse:collapse;">{label}</td>
               <td align="right" style="font-size:13px;font-weight:700;color:#222;padding:7px 0;border-bottom:1px solid #f0f0f0;{wrap}">{value}</td>
+            </tr>"""
+
+        def stat_row_stacked(label, value):
+            """Label on top line, value on the next line (full-width cell)."""
+            return f"""
+            <tr>
+              <td colspan="2" style="font-size:13px;padding:7px 0;border-bottom:1px solid #f0f0f0;border-collapse:collapse;">
+                <span style="color:#555;">{label}</span><br>
+                <span style="font-weight:700;color:#222;font-size:13px;">{value}</span>
+              </td>
             </tr>"""
 
         html = f"""
@@ -179,9 +208,9 @@ def build_yoy_html() -> str:
               <p style="margin:0 0 10px 0;font-size:13px;font-weight:700;color:#2e7d32;">&#10024;&nbsp; 2026 Year-to-Date ({month_range})</p>
               <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
                 {stat_row("Total Incidents", f'<span style="font-size:18px;color:#2e7d32;">{total_2026}</span>')}
-                {stat_row("CDS ROR Owned", cds_ror)}
-                {stat_row("Platform Outage (L0/L1)", platform_outage)}
-                {stat_row("IAO Incidents (2026 YTD)", iao_count)}
+                {stat_row("Platform Outage (L0, L1) &mdash; IAO + Non IAO", platform_outage)}
+                {stat_row("Non IAO Incidents (Excl. Platform Outage)", non_iao_excl_platform)}
+                {stat_row("IAO Incidents (Excl. Platform Outage)", iao_excl_platform)}
                 {stat_row('<span style="font-weight:700;">Projected 2026 (CDS owned)</span>', f'<span style="white-space:nowrap;">{projection}&nbsp;<span style="font-size:11px;color:{trend_color};font-weight:700;">({trend_label})</span></span>', nowrap=True)}
               </table>
             </td>
@@ -189,9 +218,9 @@ def build_yoy_html() -> str:
           </tr>
         </table>
         <p style="margin:8px 0 0 0;font-size:11px;color:#888;font-style:italic;">
-          &#9888;&nbsp; Methodology note: Platform incidents (ICC L0 / ESD S2P Technical L1) are excluded from
-          both the 2026 projection and the 2025 CDS-owned baseline so the comparison is like-for-like.
-          The 2025 platform count is estimated from backup data and scaled to match the verified 2025 total.
+          &#9888;&nbsp; Platform incidents (ICC L0 / ESD S2P Technical L1) are excluded from both the 2026
+          projection and the 2025 baseline to ensure a fair, like-for-like comparison. The 2025 platform
+          figure is estimated from backup data and proportionally scaled to align with the verified 2025 total.
         </p>"""
         return html
 

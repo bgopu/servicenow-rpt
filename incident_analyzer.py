@@ -17,7 +17,7 @@ class IncidentAnalyzer:
         'finance': ['fin', 'finance', 'gfinfx', 'finfx'],
         'worker': ['wrkr', 'worker'],
         'ibds': ['ibds', 'ibdsingst', 'cpibdsingst'],
-        'iao': ['iao'],
+        'iao': ['iao'],  # jobs with cp/ip/if prefix are also IAO (detected in _extract_domain)
         'reference': ['mdg', 'mdgloc', 'mdgcom', 'mdgfin', 'mdgs4','locanl','calendar', 'calanal', 'ref', 'mdref','ifcal','cpcal'],
         'other': []
     }
@@ -66,27 +66,39 @@ class IncidentAnalyzer:
             return job_name if job_name else 'Unknown'
         return 'Unknown'
     
+    @staticmethod
+    def _job_bare_name(desc_lower: str) -> str:
+        """Extract the bare job name segment (before ^, with azmcd/azmxd/azm prefix stripped)."""
+        job_part = desc_lower.split('^')[0].strip()
+        for pfx in ('azmcd', 'azmxd', 'azm'):
+            if job_part.startswith(pfx):
+                return job_part[len(pfx):]
+        return job_part
+
     def _extract_domain(self, description: str) -> str:
         """Extract domain from job name in description."""
         if pd.isna(description):
             return 'other'
         
         desc_lower = str(description).lower()
+        bare = self._job_bare_name(desc_lower)
         
-        # Check IBDS first (higher priority)
-        if any(pattern in desc_lower for pattern in self.DOMAIN_PATTERNS['ibds']):
+        # Check IBDS first — but only if NOT an IAO-prefixed (cp/ip/if) job
+        is_iao_prefix = any(bare.startswith(p) for p in ('cp', 'ip', 'if'))
+        has_ibds = any(pattern in desc_lower for pattern in self.DOMAIN_PATTERNS['ibds'])
+        if has_ibds and not is_iao_prefix:
             return 'ibds'
         
-        # Check IAO
-        if desc_lower.startswith('iao') or ' iao ' in desc_lower:
+        # IAO: literal "iao" in description OR job name starts with cp/ip/if
+        if desc_lower.startswith('iao') or ' iao ' in desc_lower or is_iao_prefix:
             return 'iao'
         
         # Check specific finance patterns: finmdg, mdgfin, finfxmdging, finlmdging, mdgs4fin
         if 'finmdg' in desc_lower or 'mdgfin' in desc_lower or 'finfxmdg' in desc_lower or 'finlmdg' in desc_lower or 'mdgs4fin' in desc_lower:
             return 'finance'
         
-        # Check customer patterns before mdg: cusmdg, entity, entflt, merge
-        if 'cusmdg' in desc_lower or 'entity' in desc_lower or 'entflt' in desc_lower or 'merge' in desc_lower:
+        # Check customer patterns before mdg: cusmdg, mdgcus, entity, entflt, merge
+        if 'cusmdg' in desc_lower or 'mdgcus' in desc_lower or 'entity' in desc_lower or 'entflt' in desc_lower or 'merge' in desc_lower:
             return 'customer'
         
         # Check supplier patterns before mdg: supmdg

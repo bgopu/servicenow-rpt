@@ -223,6 +223,74 @@ def parse_oncall_from_html(html: str) -> str | None:
     return None
 
 
+def parse_oncall_for_ww(html: str, target_ww: int) -> str | None:
+    """
+    Parse the Confluence roster table and return the on-call owner for a specific target WW.
+    Same logic as parse_oncall_from_html but looks up target_ww instead of current WW.
+    """
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    tables = soup.find_all("table")
+    today = datetime.now(IST)
+
+    for table in tables:
+        rows = table.find_all("tr")
+        if len(rows) < 2:
+            continue
+
+        headers = [th.get_text(strip=True).lower() for th in rows[0].find_all(["th", "td"])]
+        name_col = next(
+            (i for i, h in enumerate(headers) if any(x in h for x in ["name", "owner", "engineer", "person", "who", "duty"])),
+            None,
+        )
+        period_col = next(
+            (i for i, h in enumerate(headers) if any(x in h for x in ["ww", "week"])),
+            None,
+        )
+        start_date_col = next(
+            (i for i, h in enumerate(headers) if any(x in h for x in ["start", "from", "begin"])),
+            None,
+        )
+        if period_col is None:
+            period_col = next(
+                (i for i, h in enumerate(headers) if any(x in h for x in ["date", "period", "when"])),
+                None,
+            )
+        if name_col is None:
+            name_col = 1
+            period_col = 0
+
+        for row in rows[1:]:
+            cells = row.find_all(["td", "th"])
+            if len(cells) <= max(name_col, period_col if period_col is not None else 0):
+                continue
+
+            period_text = cells[period_col].get_text(separator=" ", strip=True) if period_col is not None else ""
+            name_text = cells[name_col].get_text(separator=" ", strip=True)
+            if not name_text or not period_text:
+                continue
+
+            ww_matches = re.findall(r"ww\s*(\d+)", period_text, re.I)
+            if ww_matches:
+                ww_nums = [int(w) for w in ww_matches]
+                ww_range = range(min(ww_nums), max(ww_nums) + 1) if len(ww_nums) > 1 else [ww_nums[0]]
+                if target_ww in ww_range:
+                    year_ok = True
+                    if start_date_col is not None and start_date_col < len(cells):
+                        start_text = cells[start_date_col].get_text(strip=True)
+                        try:
+                            parsed = pd.to_datetime(start_text, errors="coerce")
+                            if pd.notna(parsed):
+                                year_ok = (parsed.year == today.year)
+                        except Exception:
+                            pass
+                    if year_ok:
+                        return name_text
+
+    return None
+
+
 # ─── Incident filtering ────────────────────────────────────────────────────────
 
 def get_new_incidents(days: int = 8) -> pd.DataFrame:
@@ -273,13 +341,14 @@ def get_new_incidents(days: int = 8) -> pd.DataFrame:
 
 # ─── Email builder ─────────────────────────────────────────────────────────────
 
-def build_alert_email(incidents_df: pd.DataFrame, oncall_name: str | None, days: int) -> str:
+def build_alert_email(incidents_df: pd.DataFrame, roster_html: str | None, days: int) -> str:
     today = datetime.now(IST)
     ww = get_intel_ww(today)
     since = (today - timedelta(days=days)).strftime("%b %d, %Y")
     now_str = today.strftime("%B %d, %Y at %I:%M %p IST")
     count = len(incidents_df)
 
+    oncall_name = parse_oncall_from_html(roster_html) if roster_html else None
     oncall_html = (
         f'<span style="font-size:15px;font-weight:700;color:#0068b8;">{oncall_name}</span>'
         if oncall_name
@@ -287,19 +356,44 @@ def build_alert_email(incidents_df: pd.DataFrame, oncall_name: str | None, days:
     )
     roster_link = f'<a href="{WIKI_ROSTER_URL}" style="color:#0068b8;">L3 On-Call Roster</a>'
 
-    # Build incident table rows
+    # Build incident table rows grouped by WW
     table_rows = ""
-    for _, row in incidents_df.iterrows():
-        num = row.get("Number", "")
-        snow_url = f"{SNOW_BASE}/nav_to.do?uri=incident.do?sysparm_query=number={num}"
-        pri = str(row.get("Priority", ""))
-        pri_color = "#c62828" if "2 - High" in pri or "1 - " in pri else ("#e65100" if "3 - Mod" in pri else "#555")
-        opened = str(row.get("Opened", ""))[:16]
-        desc = str(row.get("Short Description", ""))[:80]
-        ag = str(row.get("Assignment Group", ""))
-        owner = str(row.get("Owner", ""))
+    if not incidents_df.empty:
+        def _safe_ww(opened_str):
+            try:
+                dt = pd.to_datetime(opened_str, errors="coerce")
+                if pd.notna(dt):
+                    return get_intel_ww(dt)
+            except Exception:
+                pass
+            return ww
 
-        table_rows += f"""
+        incidents_df = incidents_df.copy()
+        incidents_df["_ww"] = incidents_df["Opened"].apply(_safe_ww)
+
+        for ww_num, group in sorted(incidents_df.groupby("_ww"), key=lambda x: x[0], reverse=True):
+            ww_oncall = parse_oncall_for_ww(roster_html, ww_num) if roster_html else None
+            ww_oncall_str = ww_oncall if ww_oncall else "Not on record"
+            table_rows += f"""
+        <tr style="background:#e3f2fd;">
+          <td colspan="6" style="padding:7px 12px;">
+            <span style="font-size:12px;font-weight:700;color:#1565c0;text-transform:uppercase;
+                         letter-spacing:0.4px;">WW{ww_num:02d}</span>
+            &nbsp;&nbsp;
+            <span style="font-size:12px;color:#444;">On-Call: <strong>{ww_oncall_str}</strong></span>
+          </td>
+        </tr>"""
+            for _, row in group.iterrows():
+                num = row.get("Number", "")
+                snow_url = f"{SNOW_BASE}/nav_to.do?uri=incident.do?sysparm_query=number={num}"
+                pri = str(row.get("Priority", ""))
+                pri_color = "#c62828" if "2 - High" in pri or "1 - " in pri else ("#e65100" if "3 - Mod" in pri else "#555")
+                opened = str(row.get("Opened", ""))[:16]
+                desc = str(row.get("Short Description", ""))[:80]
+                ag = str(row.get("Assignment Group", ""))
+                assigned = str(row.get("Owner", "")).strip()
+                owner = assigned if assigned and assigned.lower() not in ("nan", "none", "") else ww_oncall_str
+                table_rows += f"""
         <tr style="border-bottom:1px solid #f0f0f0;">
           <td style="padding:8px 10px;font-size:13px;">
             <a href="{snow_url}" target="_blank"
@@ -311,8 +405,7 @@ def build_alert_email(incidents_df: pd.DataFrame, oncall_name: str | None, days:
           <td style="padding:8px 10px;font-size:13px;color:#444;">{owner}</td>
           <td style="padding:8px 10px;font-size:12px;color:#888;white-space:nowrap;">{opened}</td>
         </tr>"""
-
-    if not table_rows:
+    else:
         table_rows = """
         <tr>
           <td colspan="6" style="padding:20px;text-align:center;color:#4caf50;font-weight:700;">
@@ -337,7 +430,7 @@ def build_alert_email(incidents_df: pd.DataFrame, oncall_name: str | None, days:
     <tr>
       <td bgcolor="#b71c1c" style="padding:22px 28px;background-color:#b71c1c;">
         <p style="margin:0;font-size:19px;font-weight:700;color:#fff;">
-          &#9888;&#65039; CDS ROR — New Incident Alert
+          &#9888;&#65039; CDS ROR — Incidents in New State
         </p>
         <p style="margin:4px 0 0 0;font-size:13px;color:#ffcdd2;">
           WW{ww:02d} &nbsp;|&nbsp; Incidents opened since {since}
@@ -354,7 +447,7 @@ def build_alert_email(incidents_df: pd.DataFrame, oncall_name: str | None, days:
             <td style="padding:14px 16px;">
               <p style="margin:0 0 4px 0;font-size:12px;font-weight:700;color:#1565c0;
                          text-transform:uppercase;letter-spacing:0.5px;">
-                &#128100; Current On-Call Owner
+                &#128100; WW{ww:02d} - On-Call Owner
               </p>
               <p style="margin:0;font-size:15px;">{oncall_html}</p>
               <p style="margin:6px 0 0 0;font-size:12px;color:#666;">
@@ -445,7 +538,7 @@ def send_alert_email(html_body: str, count: int, days: int) -> bool:
         return False
 
     ww = get_intel_ww()
-    subject = f"⚠️ CDS ROR Alert — {count} New Incident{'s' if count != 1 else ''} (Last {days} Days) | WW{ww:02d}"
+    subject = f"⚠️ CDS ROR — {count} Incident{'s' if count != 1 else ''} in New State (Last {days} Days) | WW{ww:02d}"
 
     print(f"📧 Sending alert via Outlook…")
     print(f"   To      : {', '.join(recipients)}")
@@ -475,7 +568,7 @@ async def main():
     args = parser.parse_args()
 
     print(f"\n{'='*60}")
-    print(f"  🚨 CDS ROR — New Incident Alert")
+    print(f"  🚨 CDS ROR — Incidents in New State")
     print(f"{'='*60}")
     print(f"  Look-back : Last {args.days} days")
     print(f"  Data file : {CSV_FILE}")
@@ -487,12 +580,12 @@ async def main():
     print(f"   Found {len(incidents)} New incident(s)\n")
 
     # ── Step 2: Fetch on-call roster ──────────────────────────────────────
-    oncall_name = None
+    roster_html = None
     if not args.no_wiki:
         print("🌐 Fetching on-call roster from Intel Wiki…")
-        html = await fetch_roster_html()
-        if html:
-            oncall_name = parse_oncall_from_html(html)
+        roster_html = await fetch_roster_html()
+        if roster_html:
+            oncall_name = parse_oncall_from_html(roster_html)
             if oncall_name:
                 print(f"   ✅ Current on-call: {oncall_name}\n")
             else:
@@ -504,7 +597,7 @@ async def main():
 
     # ── Step 3: Build & send email ────────────────────────────────────────
     print("📧 Building alert email…")
-    html_body = build_alert_email(incidents, oncall_name, args.days)
+    html_body = build_alert_email(incidents, roster_html, args.days)
     send_alert_email(html_body, len(incidents), args.days)
 
 

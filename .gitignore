@@ -6,6 +6,9 @@ config_sharepoint.json
 .servicenow_session.json
 .sharepoint_session.json
 
+# Logs
+logs/
+
 # Python
 __pycache__/
 *.py[cod]

@@ -78,28 +78,43 @@ class ReportGenerator:
         
         # Extract domain for each incident
         self.df['Domain'] = self.df['Short description'].apply(self._extract_domain_simple)
+        # Sub Domain: specific domain for IAO jobs (cp/ip/if prefix), empty for others
+        self.df['Sub Domain'] = self.df['Short description'].apply(self._extract_sub_domain_simple)
     
+    @staticmethod
+    def _job_bare_name(desc_lower: str) -> str:
+        """Extract the bare job name segment (before ^, with azmcd/azmxd/azm prefix stripped)."""
+        job_part = desc_lower.split('^')[0].strip()
+        for pfx in ('azmcd', 'azmxd', 'azm'):
+            if job_part.startswith(pfx):
+                return job_part[len(pfx):]
+        return job_part
+
     def _extract_domain_simple(self, description: str) -> str:
         """Simple domain extraction from description - synced with incident_analyzer.py."""
         if pd.isna(description):
             return 'Other'
         
         desc_lower = str(description).lower()
+        bare = self._job_bare_name(desc_lower)
         
-        # Check IBDS first (higher priority)
-        if any(x in desc_lower for x in ['ibds', 'ibdsingst', 'cpibdsingst']):
+        # Check IBDS first — but only if NOT an IAO-prefixed (cp/ip/if) job
+        # cp-prefixed IBDS jobs (e.g. cpibdsingst) → IAO domain, IBDS subdomain
+        has_ibds = any(x in desc_lower for x in ['ibds', 'ibdsingst', 'cpibdsingst'])
+        is_iao_prefix = any(bare.startswith(p) for p in ('cp', 'ip', 'if'))
+        if has_ibds and not is_iao_prefix:
             return 'IBDS'
         
-        # Check IAO
-        elif desc_lower.startswith('iao') or ' iao ' in desc_lower:
+        # IAO: literal "iao" in description OR job name starts with cp/ip/if
+        if desc_lower.startswith('iao') or ' iao ' in desc_lower or is_iao_prefix:
             return 'IAO'
         
         # Check specific finance patterns: finmdg, mdgfin, finfxmdg, finlmdg, mdgs4fin
         elif 'finmdg' in desc_lower or 'mdgfin' in desc_lower or 'finfxmdg' in desc_lower or 'finlmdg' in desc_lower or 'mdgs4fin' in desc_lower:
             return 'Finance'
         
-        # Check customer patterns before mdg: cusmdg, entity, entflt, merge
-        elif 'cusmdg' in desc_lower or 'entity' in desc_lower or 'entflt' in desc_lower or 'merge' in desc_lower:
+        # Check customer patterns before mdg: cusmdg, mdgcus, entity, entflt, merge
+        elif 'cusmdg' in desc_lower or 'mdgcus' in desc_lower or 'entity' in desc_lower or 'entflt' in desc_lower or 'merge' in desc_lower:
             return 'Customer'
         
         # Check supplier patterns before mdg: supmdg
@@ -107,7 +122,7 @@ class ReportGenerator:
             return 'Supplier'
         
         # Check Reference (mdg patterns) - after specific domain checks
-        elif any(x in desc_lower for x in ['mdg', 'mdgloc', 'mdgcom', 'mdgfin', 'mdgs4', 'locanl', 'calendar', 'calanal', 'ref', 'mdref', 'ifcal', 'cpcal']):
+        elif any(x in desc_lower for x in ['mdg', 'mdgloc', 'mdgcom', 'mdgfin', 'mdgs4', 'locanl', 'calendar', 'calanal', 'ref', 'mdref']):
             return 'Reference'
         
         # Check Finance after Reference
@@ -119,15 +134,15 @@ class ReportGenerator:
             return 'Worker'
         
         # Check Customer (broader patterns)
-        elif any(x in desc_lower for x in ['cus', 'customer', 'cpcus', 'cusanl', 'actvt', 'actvtingst', 'rdmingst', 'rltn', 'azmcdmatchingst']):
+        elif any(x in desc_lower for x in ['cus', 'customer', 'cusanl', 'actvt', 'actvtingst', 'rdmingst', 'rltn', 'azmcdmatchingst']):
             return 'Customer'
         
         # Check Supplier (broader patterns)
-        elif any(x in desc_lower for x in ['sup', 'supplier', 'cpsup', 'supanl', 'rltsup']):
+        elif any(x in desc_lower for x in ['sup', 'supplier', 'supanl', 'rltsup']):
             return 'Supplier'
         
         # Check Item
-        elif any(x in desc_lower for x in ['item', 'ipitem', 'ifitem', 'cpitem', 'mditem', 'xedm']):
+        elif any(x in desc_lower for x in ['item', 'mditem', 'xedm']):
             return 'Item'
         
         # Check Reporting (rlt checked after rltn to avoid false match)
@@ -136,6 +151,34 @@ class ReportGenerator:
         
         else:
             return 'Other'
+
+    def _extract_sub_domain_simple(self, description: str) -> str:
+        """For IAO jobs (cp/ip/if prefix), return the specific sub-domain; otherwise empty."""
+        if pd.isna(description):
+            return ''
+        desc_lower = str(description).lower()
+        bare = self._job_bare_name(desc_lower)
+        
+        # Only applies to cp/ip/if jobs (not plain iao prefix, not standalone ibds)
+        iao_prefix = next((p for p in ('cp', 'ip', 'if') if bare.startswith(p)), None)
+        if not iao_prefix:
+            return ''
+        if 'ibds' in desc_lower: return 'IBDS'
+        
+        remainder = bare[len(iao_prefix):]
+        # Detect specific domain from the remainder of the job name
+        if 'ibds' in remainder: return 'IBDS'
+        if 'finmdg' in remainder or 'mdgfin' in remainder or 'finfxmdg' in remainder or 'finlmdg' in remainder or 'mdgs4fin' in remainder: return 'Finance'
+        if 'cusmdg' in remainder or 'entity' in remainder or 'entflt' in remainder or 'merge' in remainder: return 'Customer'
+        if 'supmdg' in remainder: return 'Supplier'
+        if any(x in remainder for x in ['mdg', 'mdgloc', 'mdgcom', 'mdgs4', 'locanl', 'calendar', 'cal', 'ref', 'mdref']): return 'Reference'
+        if any(x in remainder for x in ['fin', 'finance', 'gfinfx', 'finfx']): return 'Finance'
+        if any(x in remainder for x in ['wrkr', 'worker']): return 'Worker'
+        if any(x in remainder for x in ['cus', 'customer', 'cusanl', 'actvt', 'rdmingst', 'rltn']): return 'Customer'
+        if any(x in remainder for x in ['sup', 'supplier', 'supanl', 'rltsup']): return 'Supplier'
+        if any(x in remainder for x in ['item', 'mditem', 'xedm']): return 'Item'
+        if any(x in remainder for x in ['rpt', 'report']): return 'Reporting'
+        return 'Other'
     
     def to_excel(self, filename: str = None) -> str:
         """
@@ -830,16 +873,16 @@ class ReportGenerator:
                             <span class="value">{{ ytd_2026.total }}</span>
                         </div>
                         <div class="comparison-stat">
-                            <span class="label">CDS ROR Issues</span>
-                            <span class="value">{{ ytd_2026.cds_ror }}</span>
-                        </div>
-                        <div class="comparison-stat">
-                            <span class="label">Platform Outage (L0, L1 Issues)</span>
+                            <span class="label">Platform Outage (L0, L1) — IAO + Non IAO</span>
                             <span class="value">{{ ytd_2026.platform_outage }}</span>
                         </div>
                         <div class="comparison-stat">
-                            <span class="label">IAO Incidents (2026 YTD)</span>
-                            <span class="value">{{ ytd_2026.iao_count }}</span>
+                            <span class="label">Non IAO Incidents (Excl. Platform Outage)</span>
+                            <span class="value">{{ ytd_2026.non_iao_count }}</span>
+                        </div>
+                        <div class="comparison-stat">
+                            <span class="label">IAO Incidents (Excl. Platform Outage)</span>
+                            <span class="value">{{ ytd_2026.iao_excl_platform }}</span>
                         </div>
                         <div class="comparison-stat" style="background:#f0f8f0;border-radius:4px;padding:8px 4px;">
                             <span class="label" style="font-weight:700;">Projected 2026 (CDS owned)</span>
@@ -1239,10 +1282,113 @@ class ReportGenerator:
     {% endif %}
     
     <script>
-        // Domain and State filtering functionality
-        let currentFilter = null;
-        let currentFilterType = null; // 'domain' or 'state'
+        // ── Filter state ──────────────────────────────────────────────────────
+        // activeFilters holds ALL secondary filters simultaneously, e.g.:
+        //   { domain: 'Customer', assignment_group: 'CDS S2P' }
+        // Date filter is tracked separately in currentDateValue.
+        let activeFilters = {};
+        let currentDateValue = '2026-q1';
         const clearBtn = document.getElementById('clearFilterBtn');
+
+        // ── Core helpers ──────────────────────────────────────────────────────
+        function _rowMatchesDate(row, dateValue) {
+            if (!dateValue || dateValue === 'all') return true;
+            const openedDate = row.getAttribute('data-opened-date');
+            if (!openedDate) return false;
+            if (dateValue.includes('-q')) {
+                const [year, quarter] = dateValue.split('-q');
+                if (openedDate.substring(0, 4) !== year) return false;
+                const m = parseInt(openedDate.substring(5, 7));
+                if (quarter === '1') return m >= 1  && m <= 3;
+                if (quarter === '2') return m >= 4  && m <= 6;
+                if (quarter === '3') return m >= 7  && m <= 9;
+                if (quarter === '4') return m >= 10 && m <= 12;
+                return false;
+            }
+            return openedDate.substring(0, 7) === dateValue;
+        }
+
+        function _rowMatchesAllSecondary(row, headers, cells) {
+            // week filter acts as its own date override — already handled in applyFilters
+            for (const [type, value] of Object.entries(activeFilters)) {
+                if (type === 'domain') {
+                    const i = headers.indexOf('Domain');
+                    if (i === -1 || !cells[i] || cells[i].textContent.trim() !== value) return false;
+                }
+                else if (type === 'state') {
+                    const i = headers.indexOf('State');
+                    if (i === -1 || !cells[i] || cells[i].textContent.trim() !== value) return false;
+                }
+                else if (type === 'priority') {
+                    if (row.getAttribute('data-priority') !== value) return false;
+                }
+                else if (type === 'sub_domain') {\n                    const i = headers.indexOf('Sub Domain');\n                    if (i === -1 || !cells[i] || cells[i].textContent.trim() !== value) return false;\n                }\n                else if (type === 'assignment_group') {
+                    const i = headers.indexOf('Assignment Group');
+                    if (i === -1 || !cells[i] || cells[i].textContent.trim() !== value) return false;
+                }
+                else if (type === 'breach') {
+                    if (row.getAttribute('data-breached') !== 'true') return false;
+                }
+                else if (type === 'week') {
+                    const weekRange = weekRanges[value];
+                    const openedDate = row.getAttribute('data-opened-date');
+                    if (!openedDate || !weekRange) return false;
+                    const d = new Date(openedDate);
+                    if (!(d >= new Date(weekRange.start) && d < new Date(weekRange.end))) return false;
+                }
+                else if (type === 'job') {
+                    const i = headers.indexOf('Short description');
+                    if (i === -1 || !cells[i] || !cells[i].textContent.toLowerCase().includes(value.toLowerCase())) return false;
+                }
+            }
+            return true;
+        }
+
+        function _buildFilterLabel() {
+            const parts = Object.entries(activeFilters).map(([type, value]) => {
+                if (type === 'domain')           return `Domain: ${value}`;
+                if (type === 'sub_domain')        return `Sub Domain: ${value}`;
+                if (type === 'state')            return `State: ${value}`;
+                if (type === 'priority')         return `Priority: ${value}`;
+                if (type === 'assignment_group') return `Group: ${value}`;
+                if (type === 'breach')           return 'Breached';
+                if (type === 'week')             return trendLabels[value] || `Week ${value}`;
+                if (type === 'job')              return `Job: ${value}`;
+                return value;
+            });
+            return parts.join(' · ');
+        }
+
+        // Central function — every filter goes through here
+        function applyFilters() {
+            const table = document.getElementById('incidentTable');
+            if (!table) return 0;
+            const rows = table.querySelectorAll('tbody tr');
+            const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
+            let visibleCount = 0;
+            const skipDate = ('week' in activeFilters); // week is its own date boundary
+            rows.forEach(row => {
+                const cells = row.querySelectorAll('td');
+                const matchDate = skipDate || _rowMatchesDate(row, currentDateValue);
+                const matchAll  = _rowMatchesAllSecondary(row, headers, cells);
+                if (matchDate && matchAll) { row.style.display = ''; visibleCount++; }
+                else                       { row.style.display = 'none'; }
+            });
+            updateStats();
+            updateChartsForFilter();
+            // Update clear button
+            if (clearBtn) {
+                const label = _buildFilterLabel();
+                if (label) {
+                    clearBtn.style.display = 'inline-block';
+                    clearBtn.textContent = `❌ Clear Filters (${visibleCount} incidents · ${label})`;
+                } else {
+                    clearBtn.style.display = 'none';
+                }
+            }
+            return visibleCount;
+        }
+        // ─────────────────────────────────────────────────────────────────────
         
         // Store original stats for reset
         const originalStats = {
@@ -1331,79 +1477,96 @@ class ReportGenerator:
         function updateChartsForFilter() {
             const table = document.getElementById('incidentTable');
             if (!table) return;
-            
-            // Recalculate domain distribution from visible rows
-            const domainCounts = {};
+
             const rows = table.querySelectorAll('tbody tr');
             const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
-            const domainColIndex = headers.indexOf('Domain');
-            
+            const domainColIndex  = headers.indexOf('Domain');
+            const subDomColIndex  = headers.indexOf('Sub Domain');
+
+            // domainCounts = raw domain counts for the pie chart (includes IAO as one bucket)
+            const domainCounts = {};
+            // expandedCounts = Non-IAO domains + IAO sub-domains for Top 3 / Lowest
+            const expandedCounts = {};
+
             if (domainColIndex !== -1) {
                 rows.forEach(row => {
                     if (row.style.display !== 'none') {
                         const cells = row.querySelectorAll('td');
-                        if (cells[domainColIndex]) {
-                            const domain = cells[domainColIndex].textContent.trim();
-                            domainCounts[domain] = (domainCounts[domain] || 0) + 1;
+                        const domain = cells[domainColIndex] ? cells[domainColIndex].textContent.trim() : '';
+                        if (!domain) return;
+
+                        // Pie chart — raw domain
+                        domainCounts[domain] = (domainCounts[domain] || 0) + 1;
+
+                        // Expanded — skip Other; for IAO use sub-domain
+                        if (domain === 'Other') return;
+                        if (domain === 'IAO') {
+                            const sub = (subDomColIndex !== -1 && cells[subDomColIndex])
+                                ? cells[subDomColIndex].textContent.trim()
+                                : '';
+                            const label = sub ? `IAO/${sub}` : 'IAO (unclassified)';
+                            expandedCounts[label] = (expandedCounts[label] || 0) + 1;
+                        } else {
+                            expandedCounts[domain] = (expandedCounts[domain] || 0) + 1;
                         }
                     }
                 });
-                
-                // Update domain chart
+
+                // Update domain pie chart (raw)
                 if (typeof domainChart !== 'undefined') {
                     const sortedDomains = Object.entries(domainCounts).sort((a, b) => b[1] - a[1]);
                     domainChart.data.labels = sortedDomains.map(e => e[0]);
                     domainChart.data.datasets[0].data = sortedDomains.map(e => e[1]);
                     domainChart.update();
                 }
-                
-                // Update top 3 domains
-                updateTopDomains(domainCounts);
+
+                // Update top 3 / lowest using expanded counts
+                updateTopDomains(expandedCounts);
             }
         }
-        
-        function updateTopDomains(domainCounts) {
-            // Filter out IAO and Other
-            const filteredDomains = Object.entries(domainCounts)
-                .filter(([domain]) => domain !== 'IAO' && domain !== 'Other' && domain !== 'other')
+
+        function updateTopDomains(expandedCounts) {
+            // expandedCounts already has Other excluded and IAO split into sub-domains
+            const sortedDomains = Object.entries(expandedCounts)
                 .sort((a, b) => b[1] - a[1]);
-            
+
             const topDomainsContainer = document.getElementById('topDomainsContainer');
             const lowestDomainBadge = document.getElementById('lowestDomainBadge');
-            
-            // Always clear and rebuild (handles zero-data case too)
+
             if (topDomainsContainer) {
                 topDomainsContainer.innerHTML = '';
-                
-                if (filteredDomains.length === 0) {
-                    // No data for this period
+
+                if (sortedDomains.length === 0) {
                     topDomainsContainer.innerHTML = `
                         <div style="text-align: center; padding: 30px; color: #94a3b8; font-size: 16px; width: 100%;">
                             📭 No incidents found for this time period
                         </div>`;
                     if (lowestDomainBadge) lowestDomainBadge.innerHTML = 'No data available for selected period';
                 } else {
-                    // Update top 3 domains
-                    const top3 = filteredDomains.slice(0, 3);
-                    
-                    top3.forEach(([domain, count], index) => {
+                    const top3 = sortedDomains.slice(0, 3);
+                    top3.forEach(([label, count], index) => {
                         const card = document.createElement('div');
                         card.className = 'top-domain-card';
-                        card.onclick = () => filterByDomain(domain);
+                        // For IAO sub-domains, filter by sub domain column; for others filter by domain
+                        if (label.startsWith('IAO/')) {
+                            const sub = label.slice(4);
+                            card.onclick = () => { activeFilters['domain'] = 'IAO'; activeFilters['sub_domain'] = sub; applyFilters(); document.getElementById('incidentTable')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+                        } else {
+                            card.onclick = () => filterByDomain(label);
+                        }
                         card.style.cursor = 'pointer';
                         card.title = 'Click to filter incidents';
                         card.innerHTML = `
                             <div class="rank">#${index + 1}</div>
-                            <div class="domain-name">${domain}</div>
+                            <div class="domain-name">${label}</div>
                             <div class="count">${count}</div>
                             <div style="font-size: 12px; opacity: 0.9; margin-top: 5px;">incidents</div>
                         `;
                         topDomainsContainer.appendChild(card);
                     });
-                    
-                    // Update lowest domain
+
                     if (lowestDomainBadge) {
-                        const lowest = filteredDomains[filteredDomains.length - 1];
+                        const lowest = sortedDomains[sortedDomains.length - 1];
                         lowestDomainBadge.innerHTML = `<strong>${lowest[0]}</strong> - Lowest (<span class="incident-number">${lowest[1]}</span>) incidents among all domains`;
                     }
                 }
@@ -1499,333 +1662,61 @@ class ReportGenerator:
         }
         
         function filterByDomain(domain) {
-            const table = document.getElementById('incidentTable');
-            if (!table) return;
-            
-            const rows = table.querySelectorAll('tbody tr');
-            let visibleCount = 0;
-            
-            currentFilter = domain;
-            currentFilterType = 'domain';
-            
-            // Find Domain column index
-            const headers = table.querySelectorAll('thead th');
-            let domainColIndex = -1;
-            headers.forEach((header, index) => {
-                if (header.textContent.trim() === 'Domain') {
-                    domainColIndex = index;
-                }
-            });
-            
-            rows.forEach(row => {
-                const cells = row.querySelectorAll('td');
-                
-                if (domainColIndex !== -1 && cells[domainColIndex]) {
-                    const cellDomain = cells[domainColIndex].textContent.trim();
-                    
-                    if (cellDomain === domain) {
-                        row.style.display = '';
-                        visibleCount++;
-                    } else {
-                        row.style.display = 'none';
-                    }
-                }
-            });
-            
-            // Show clear button
-            if (clearBtn) {
-                clearBtn.style.display = 'inline-block';
-                clearBtn.textContent = `❌ Clear Filter (Showing ${visibleCount} ${domain} incidents)`;
-            }
-            
-            // Update stats based on filtered data
-            updateStats();
-            
-            // Scroll to table
-            table.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            activeFilters['domain'] = domain;
+            applyFilters();
+            document.getElementById('incidentTable')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
-        
+
         function filterByBreach() {
-            const table = document.getElementById('incidentTable');
-            if (!table) return;
-            
-            const rows = table.querySelectorAll('tbody tr');
-            let visibleCount = 0;
-            
-            currentFilter = 'breached';
-            currentFilterType = 'breach';
-            
-            rows.forEach(row => {
-                const isBreached = row.getAttribute('data-breached');
-                
-                if (isBreached === 'true') {
-                    row.style.display = '';
-                    visibleCount++;
-                } else {
-                    row.style.display = 'none';
-                }
-            });
-            
-            // Show clear button
-            if (clearBtn) {
-                clearBtn.style.display = 'inline-block';
-                clearBtn.textContent = `❌ Clear Filter (Showing ${visibleCount} breached incidents)`;
-            }
-            
-            // Show breach columns when filtering by breach
-            const breachColumns = document.querySelectorAll('.breach-column');
-            breachColumns.forEach(col => col.classList.add('show'));
-            
-            // Update stats based on filtered data
-            updateStats();
-            
-            // Scroll to table
-            table.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            activeFilters['breach'] = 'breached';
+            document.querySelectorAll('.breach-column').forEach(col => col.classList.add('show'));
+            applyFilters();
+            document.getElementById('incidentTable')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
-        
+
         function filterByState(state) {
-            const table = document.getElementById('incidentTable');
-            if (!table) return;
-            
-            const rows = table.querySelectorAll('tbody tr');
-            let visibleCount = 0;
-            
-            currentFilter = state;
-            currentFilterType = 'state';
-            
-            // Find State column index
-            const headers = table.querySelectorAll('thead th');
-            let stateColIndex = -1;
-            headers.forEach((header, index) => {
-                if (header.textContent.trim() === 'State') {
-                    stateColIndex = index;
-                }
-            });
-            
-            rows.forEach(row => {
-                const cells = row.querySelectorAll('td');
-                
-                if (stateColIndex !== -1 && cells[stateColIndex]) {
-                    const cellState = cells[stateColIndex].textContent.trim();
-                    
-                    if (cellState === state) {
-                        row.style.display = '';
-                        visibleCount++;
-                    } else {
-                        row.style.display = 'none';
-                    }
-                }
-            });
-            
-            // Show clear button
-            if (clearBtn) {
-                clearBtn.style.display = 'inline-block';
-                clearBtn.textContent = `❌ Clear Filter (Showing ${visibleCount} ${state} incidents)`;
-            }
-            
-            // Update stats based on filtered data
-            updateStats();
-            
-            // Scroll to table
-            table.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            activeFilters['state'] = state;
+            applyFilters();
+            document.getElementById('incidentTable')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
-        
+
         function filterByPriority(priority) {
-            const table = document.getElementById('incidentTable');
-            if (!table) return;
-            
-            const rows = table.querySelectorAll('tbody tr');
-            let visibleCount = 0;
-            
-            currentFilter = priority;
-            currentFilterType = 'priority';
-            
-            rows.forEach(row => {
-                const rowPriority = row.getAttribute('data-priority');
-                
-                if (rowPriority && rowPriority === priority) {
-                    row.style.display = '';
-                    visibleCount++;
-                } else {
-                    row.style.display = 'none';
-                }
-            });
-            
-            // Show clear button
-            if (clearBtn) {
-                clearBtn.style.display = 'inline-block';
-                clearBtn.textContent = `❌ Clear Filter (Showing ${visibleCount} Priority ${priority} incidents)`;
-            }
-            
-            // Update stats based on filtered data
-            updateStats();
-            
-            // Scroll to table
-            table.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            activeFilters['priority'] = priority;
+            applyFilters();
+            document.getElementById('incidentTable')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
-        
+
         function filterByAssignmentGroup(group) {
-            const table = document.getElementById('incidentTable');
-            if (!table) return;
-            
-            const rows = table.querySelectorAll('tbody tr');
-            let visibleCount = 0;
-            
-            currentFilter = group;
-            currentFilterType = 'assignment_group';
-            
-            // Find Assignment Group column index (capital G)
-            const headers = table.querySelectorAll('thead th');
-            let groupColIndex = -1;
-            headers.forEach((header, index) => {
-                const headerText = header.textContent.trim();
-                if (headerText === 'Assignment Group') {
-                    groupColIndex = index;
-                }
-            });
-            
-            rows.forEach(row => {
-                const cells = row.querySelectorAll('td');
-                
-                if (groupColIndex !== -1 && cells[groupColIndex]) {
-                    const cellGroup = cells[groupColIndex].textContent.trim();
-                    
-                    if (cellGroup === group) {
-                        row.style.display = '';
-                        visibleCount++;
-                    } else {
-                        row.style.display = 'none';
-                    }
-                }
-            });
-            
-            // Show clear button
-            if (clearBtn) {
-                clearBtn.style.display = 'inline-block';
-                clearBtn.textContent = `❌ Clear Filter (Showing ${visibleCount} incidents from ${group})`;
-            }
-            
-            // Update stats based on filtered data
-            updateStats();
-            
-            // Scroll to table
-            table.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            activeFilters['assignment_group'] = group;
+            applyFilters();
+            document.getElementById('incidentTable')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
-        
+
         function filterByWeek(weekIndex) {
-            const table = document.getElementById('incidentTable');
-            if (!table) return;
-            
-            const rows = table.querySelectorAll('tbody tr');
-            let visibleCount = 0;
-            
-            currentFilter = weekIndex;
-            currentFilterType = 'week';
-            
-            // Use actual week ranges from the data
-            const weekRange = weekRanges[weekIndex];
-            const weekStart = new Date(weekRange.start);
-            const weekEnd = new Date(weekRange.end);
-            
-            rows.forEach(row => {
-                const openedDate = row.getAttribute('data-opened-date');
-                
-                if (openedDate) {
-                    const incidentDate = new Date(openedDate);
-                    
-                    if (incidentDate >= weekStart && incidentDate < weekEnd) {
-                        row.style.display = '';
-                        visibleCount++;
-                    } else {
-                        row.style.display = 'none';
-                    }
-                } else {
-                    row.style.display = 'none';
-                }
-            });
-            
-            // Show clear button
-            if (clearBtn) {
-                clearBtn.style.display = 'inline-block';
-                const weekLabel = trendLabels[weekIndex];
-                clearBtn.textContent = `❌ Clear Filter (Showing ${visibleCount} incidents from ${weekLabel})`;
-            }
-            
-            // Update stats based on filtered data
-            updateStats();
-            
-            // Scroll to table
-            table.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            activeFilters['week'] = weekIndex;
+            applyFilters();
+            document.getElementById('incidentTable')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
-        
+
         function filterByJobName(jobName) {
-            const table = document.getElementById('incidentTable');
-            if (!table) return;
-            
-            const rows = table.querySelectorAll('tbody tr');
-            let visibleCount = 0;
-            
-            currentFilter = jobName;
-            currentFilterType = 'job';
-            
-            // Find Short description column index
-            const headers = table.querySelectorAll('thead th');
-            let descColIndex = -1;
-            headers.forEach((header, index) => {
-                if (header.textContent.trim() === 'Short description') {
-                    descColIndex = index;
-                }
-            });
-            
-            rows.forEach(row => {
-                const cells = row.querySelectorAll('td');
-                
-                if (descColIndex !== -1 && cells[descColIndex]) {
-                    const description = cells[descColIndex].textContent.toLowerCase();
-                    
-                    if (description.includes(jobName.toLowerCase())) {
-                        row.style.display = '';
-                        visibleCount++;
-                    } else {
-                        row.style.display = 'none';
-                    }
-                }
-            });
-            
-            // Show clear button
-            if (clearBtn) {
-                clearBtn.style.display = 'inline-block';
-                clearBtn.textContent = `❌ Clear Filter (Showing ${visibleCount} ${jobName} incidents)`;
-            }
-            
-            // Update stats based on filtered data
-            updateStats();
-            
-            // Scroll to table
-            table.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            activeFilters['job'] = jobName;
+            applyFilters();
+            document.getElementById('incidentTable')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
-        
+
         function clearAllFilters() {
             clearFilter();
         }
-        
-        function filterByDateRange(dateValue) {
-            const table = document.getElementById('incidentTable');
-            if (!table) return;
-            
-            const rows = table.querySelectorAll('tbody tr');
-            let visibleCount = 0;
-            let periodLabel = '';
-            
-            if (dateValue === 'all') {
-                // 'all' is no longer a selectable option; treat as default 2026-q1
-                dateValue = '2026-q1';
-            }
 
-            currentFilter = dateValue;
-            currentFilterType = 'date';
-            
-            // Set period label
+        function filterByDateRange(dateValue) {
+            if (dateValue === 'all') dateValue = '2026-q1';
+
+            // Update the persistent date value; clear any week filter (week is its own date)
+            currentDateValue = dateValue;
+            delete activeFilters['week'];
+
+            // Build period label
+            let periodLabel = '';
             if (dateValue.includes('-q')) {
                 const [year, quarter] = dateValue.split('-q');
                 const quarters = {'1': 'Q1 (Jan-Mar)', '2': 'Q2 (Apr-Jun)', '3': 'Q3 (Jul-Sep)', '4': 'Q4 (Oct-Dec)'};
@@ -1836,92 +1727,29 @@ class ReportGenerator:
                 const [year, month] = dateValue.split('-');
                 periodLabel = `${months[month]} ${year}`;
             }
-            
-            rows.forEach(row => {
-                const openedDate = row.getAttribute('data-opened-date');
-                if (!openedDate) {
-                    row.style.display = 'none';
-                    return;
-                }
-                
-                let showRow = false;
-                
-                // Handle quarter filters
-                if (dateValue.includes('-q')) {
-                    const [year, quarter] = dateValue.split('-q');
-                    const dateYear = openedDate.substring(0, 4);
-                    const dateMonth = parseInt(openedDate.substring(5, 7));
-                    
-                    if (dateYear === year) {
-                        if (quarter === '1' && dateMonth >= 1 && dateMonth <= 3) showRow = true;
-                        if (quarter === '2' && dateMonth >= 4 && dateMonth <= 6) showRow = true;
-                        if (quarter === '3' && dateMonth >= 7 && dateMonth <= 9) showRow = true;
-                        if (quarter === '4' && dateMonth >= 10 && dateMonth <= 12) showRow = true;
-                    }
-                }
-                // Handle month filters
-                else {
-                    const yearMonth = openedDate.substring(0, 7); // YYYY-MM
-                    showRow = yearMonth === dateValue;
-                }
-                
-                if (showRow) {
-                    row.style.display = '';
-                    visibleCount++;
-                } else {
-                    row.style.display = 'none';
-                }
-            });
-            
-            // Show clear button
-            if (clearBtn) {
-                clearBtn.style.display = 'inline-block';
-                clearBtn.textContent = `❌ Clear Filter (Showing ${visibleCount} incidents)`;
-            }
-            
-            // Update title
+
+            const visibleCount = applyFilters();
+
+            // Update title and heading
             const reportTitle = document.getElementById('reportTitle');
             const topDomainsHeading = document.getElementById('topDomainsHeading');
-            
-            if (reportTitle) {
-                if (dateValue === 'all') {
-                    reportTitle.textContent = '📊 CDS ROR - ServiceNow Incident Report';
-                    if (topDomainsHeading) topDomainsHeading.textContent = '🚨 Top 3 Domains (2026 Q1)';
-                } else {
-                    reportTitle.textContent = `📊 CDS ROR - ServiceNow Incident Report (${periodLabel})`;
-                    if (topDomainsHeading) topDomainsHeading.textContent = `🚨 Top 3 Domains (${periodLabel})`;
-                }
-            }
-            
-            // Sync both filter dropdowns
+            if (reportTitle) reportTitle.textContent = `📊 CDS ROR - ServiceNow Incident Report (${periodLabel})`;
+            if (topDomainsHeading) topDomainsHeading.textContent = `🚨 Top 3 Domains (${periodLabel})`;
+
+            // Sync both dropdowns
             const dateFilter = document.getElementById('dateFilter');
             const dateFilter2 = document.getElementById('dateFilter2');
             if (dateFilter) dateFilter.value = dateValue;
             if (dateFilter2) dateFilter2.value = dateValue;
-            
-            // Update stats and charts
-            updateStats();
-            updateChartsForFilter();
         }
-        
+
         function clearFilter() {
-            // Reset to default 2026 Q1 view instead of All Time
-            filterByDateRange('2026-q1');
-            
-            // Hide breach columns
-            const breachColumns = document.querySelectorAll('.breach-column');
-            breachColumns.forEach(col => col.classList.remove('show'));
-            
-            // Hide clear button
-            if (clearBtn) clearBtn.style.display = 'none';
-            
-            currentFilter = null;
-            currentFilterType = null;
-            
-            // Restore original stats
-            restoreOriginalStats();
+            // Keep the current date filter; remove all secondary filters
+            activeFilters = {};
+            document.querySelectorAll('.breach-column').forEach(col => col.classList.remove('show'));
+            applyFilters();
         }
-        
+
         function downloadExcel() {
             const table = document.getElementById('incidentTable');
             if (!table) return;
@@ -2046,13 +1874,24 @@ class ReportGenerator:
                     # Compute dynamic month range e.g. "Jan - Mar"
                     latest_month = df_2026['Opened_dt'].max().strftime('%b') if not df_2026.empty else 'Dec'
                     month_range = 'Jan - ' + latest_month
-                    # IAO count for 2026
-                    iao_count = int(df_2026['Domain'].str.upper().eq('IAO').sum()) if 'Domain' in df_2026.columns else 0
+                    # IAO / Non-IAO counts for 2026 (both exclude platform outage)
+                    iao_excl_platform = 0
+                    if 'Domain' in df_2026.columns and 'Assignment Group' in df_2026.columns:
+                        iao_excl_platform = int(
+                            df_2026[
+                                df_2026['Domain'].str.upper().eq('IAO') &
+                                ~df_2026['Assignment Group'].isin(['ICC L0', 'ESD S2P Technical L1'])
+                            ].shape[0]
+                        )
+                    elif 'Domain' in df_2026.columns:
+                        iao_excl_platform = int(df_2026['Domain'].str.upper().eq('IAO').sum())
+                    non_iao_excl_platform = cds_ror_count - iao_excl_platform
                     ytd_2026 = {
-                        'total': total_2026,  # All incidents
-                        'cds_ror': cds_ror_count,  # Team-owned incidents (excluding ICC L0 and ESD S2P Technical L1)
-                        'platform_outage': platform_outage_count,  # ICC L0 + ESD S2P Technical L1
-                        'iao_count': iao_count,
+                        'total': total_2026,
+                        'cds_ror': cds_ror_count,
+                        'platform_outage': platform_outage_count,
+                        'non_iao_count': non_iao_excl_platform,
+                        'iao_excl_platform': iao_excl_platform,
                         'days_ytd': (datetime.now() - datetime(2026, 1, 1)).days,
                         'month_range': month_range,
                     }
@@ -2066,17 +1905,30 @@ class ReportGenerator:
         if 'Domain' in self.df.columns:
             domain_counts = self.df['Domain'].value_counts()
             domain_data = domain_counts.to_dict()
-            
-            # For top/lowest calculations, exclude IAO and Other
-            domain_counts_filtered = domain_counts[~domain_counts.index.isin(['IAO', 'Other'])]
-            
-            # Get top 3 domains (excluding IAO and Other)
-            top_domains = domain_counts_filtered.head(3).to_dict()
-            
-            # Get lowest domain (exclude IAO and Other)
-            domain_counts_sorted = domain_counts_filtered.sort_values(ascending=True)
-            if len(domain_counts_sorted) > 0:
-                lowest_domain = {'name': domain_counts_sorted.index[0], 'count': domain_counts_sorted.iloc[0]}
+
+            # Build expanded counts: Non-IAO domains + IAO sub-domains individually
+            # Exclude top-level 'IAO' and 'Other'; replace IAO with its sub-domain breakdown
+            expanded = {}
+            for domain, count in domain_counts.items():
+                if domain in ('Other', 'IAO'):
+                    continue
+                expanded[domain] = int(count)
+            # Add IAO sub-domain counts (Sub Domain column, only for IAO rows)
+            if 'Sub Domain' in self.df.columns:
+                iao_rows = self.df[self.df['Domain'] == 'IAO']
+                sub_counts = iao_rows['Sub Domain'].replace('', 'IAO (unclassified)').value_counts()
+                for sub, cnt in sub_counts.items():
+                    label = f'IAO/{sub}'
+                    expanded[label] = expanded.get(label, 0) + int(cnt)
+
+            expanded_series = pd.Series(expanded).sort_values(ascending=False)
+
+            # Top 3
+            top_domains = expanded_series.head(3).to_dict()
+
+            # Lowest
+            if len(expanded_series) > 0:
+                lowest_domain = {'name': expanded_series.index[-1], 'count': int(expanded_series.iloc[-1])}
         
         # Filter columns for the table - remove Assigned to, Priority, Opened_dt, job_name
         display_df = self.df.copy()
@@ -2116,19 +1968,22 @@ class ReportGenerator:
                 pass
         job_names = display_df['job_name'].tolist() if 'job_name' in display_df.columns else [''] * len(display_df)
         
-        columns_to_remove = ['Assigned to', 'assigned_to', 'Priority', 'priority', 'Opened_dt', 'job_name', 'Opened_ISO', 'Priority_Hidden', 'breach_time', 'is_breached', 'Breach_Hidden', 'calendar_stc', 'u_breach_reason', 'u_breach_comments']
+        columns_to_remove = ['Assigned to', 'assigned_to', 'Priority', 'priority', 'Opened_dt', 'job_name', 'Opened_ISO', 'Priority_Hidden', 'breach_time', 'is_breached', 'Breach_Hidden', 'calendar_stc', 'u_breach_reason', 'u_breach_comments', 'sys_tags', 'Tags']
         columns_to_keep_for_data = ['Opened_ISO', 'Priority_Hidden', 'Breach_Hidden']  # Keep these for data attributes
         
         for col in columns_to_remove:
             if col in display_df.columns and col not in columns_to_keep_for_data:
                 display_df = display_df.drop(columns=[col])
         
-        # Reorder columns to put Domain next to Short description
+        # Reorder columns: Domain then Sub Domain next to Short description
         if 'Domain' in display_df.columns and 'Short description' in display_df.columns:
             cols = display_df.columns.tolist()
             cols.remove('Domain')
+            if 'Sub Domain' in cols:
+                cols.remove('Sub Domain')
             short_desc_idx = cols.index('Short description')
             cols.insert(short_desc_idx + 1, 'Domain')
+            cols.insert(short_desc_idx + 2, 'Sub Domain')
             display_df = display_df[cols]
         
         html_table = display_df.to_html(index=False, escape=False, border=0, classes='incident-table', table_id='incidentTable')

@@ -1,184 +1,150 @@
-# ServiceNow Incident Report Generator
+# CDS ROR — ServiceNow Incident Reporting
 
-Generate beautiful, professional reports from ServiceNow incident CSV files for your team.
+Automated incident reporting and alerting for the CDS ROR team.  
+Pulls ServiceNow incident data, generates HTML reports, and sends emails via Outlook.
 
 ## ✨ Features
 
-- **📤 CSV Import**: Simply upload your ServiceNow incident CSV export
-- **🎨 Beautiful HTML Reports**: Stunning, interactive reports with modern design
-- **📊 Multiple Formats**: Export to HTML, Excel, or CSV
-- **📈 Smart Analytics**: Automatic summary statistics and visualizations
-- **🎬 Demo Mode**: Test with sample data before using real incidents
+- **📧 Weekly Report Email**: Sends a formatted HTML incident summary email with YoY comparison
+- **🚨 New Incident Alerts**: Detects New-state incidents from the past N days and emails the team
+- **👤 WW On-Call Lookup**: Fetches the L3 on-call owner per work week from the Intel Wiki roster
+- **📊 YoY Analytics**: Compares current year vs. prior year incident counts and projections
+- **🗂️ WW-Grouped Alerts**: Alert emails group incidents by work week with the correct on-call owner per WW
 
-## 🚀 Quick Start
+---
 
-### 1. Install Dependencies
+## 🖥️ Prerequisites
+
+- Python 3.11 or higher — [python.org](https://www.python.org/downloads/)
+- Git — [git-scm.com](https://git-scm.com)
+- Microsoft Outlook (desktop app, signed in with your Intel account)
+- Intel network or VPN access (for Wiki on-call roster fetch)
+
+---
+
+## 🚀 Setup
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/bgopu/servicenow-rpt.git
+cd servicenow-rpt
+```
+
+### 2. Create and activate a virtual environment
+
+```bash
+python -m venv .venv
+
+# Windows
+.venv\Scripts\activate
+```
+
+### 3. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Export Incidents from ServiceNow
+Then install and register pywin32 (required for Outlook email sending):
 
-1. Log into your ServiceNow instance
-2. Navigate to **Incident** → **All**
-3. Apply filters (e.g., "Assigned to me", specific dates, etc.)
-4. Click the **export** icon or menu
-5. Select **Export** → **CSV**
-6. Save the file (e.g., `my_incidents.csv`)
-
-### 3. Generate Reports
-
-**Create a beautiful HTML report:**
 ```bash
-python main.py --input my_incidents.csv
+pip install pywin32
+python .venv\Scripts\pywin32_postinstall.py -install
 ```
 
-**Generate all formats (HTML, Excel, CSV):**
-```bash
-python main.py --input my_incidents.csv --format all
+### 4. Configure recipients
+
+Create `config_sharepoint.json` in the project root (this file is gitignored):
+
+```json
+{
+  "email": {
+    "recipients": ["your.name@intel.com", "teammate@intel.com"]
+  }
+}
 ```
 
-**Try demo mode first:**
-```bash
-python main.py --demo
+### 5. Add the incidents CSV
+
+Export incidents from ServiceNow as CSV and place it at:
+
+```
+reports/Incidents_list.csv
 ```
 
-## 📋 Usage Examples
+Required columns: `number`, `short_description`, `priority`, `state`, `assignment_group`, `assigned_to`, `opened_at`
 
-### Basic HTML Report
+---
+
+## ▶️ Running
+
+### Weekly incident report email
+
+Generates and sends the full weekly HTML report with YoY comparison:
+
 ```bash
-python main.py --input incidents.csv
+python servicenow_downloader.py
 ```
 
-### Generate Excel Report
+### New-state incident alert email
+
+Scans for New-state incidents in the past 8 days, looks up the on-call owner per WW from the Wiki roster, and sends an alert:
+
 ```bash
-python main.py --input incidents.csv --format excel
+python alert_new_incidents.py
 ```
 
-### Generate All Formats
+**Options:**
+
 ```bash
-python main.py --input incidents.csv --format all
+# Change the look-back window (default: 8 days)
+python alert_new_incidents.py --days 14
+
+# Skip the Wiki on-call roster fetch
+python alert_new_incidents.py --no-wiki
 ```
 
-### Demo Mode (Test with Sample Data)
-```bash
-python main.py --demo --format all
-```
-
-## 📊 Output
-
-Reports are automatically saved in the `reports/` directory:
-
-- **HTML**: `reports/report_YYYYMMDD_HHMMSS.html` - Beautiful, interactive report
-- **Excel**: `reports/incidents_YYYYMMDD_HHMMSS.xlsx` - Spreadsheet format
-- **CSV**: `reports/incidents_YYYYMMDD_HHMMSS.csv` - Raw data export
-
-### HTML Report Features
-
-The HTML report includes:
-- 📊 **Summary Dashboard** with key metrics
-- 📈 **Visual Statistics** breakdown by state, priority, and category  
-- 📋 **Detailed Table** with all incident information
-- 🎨 **Modern Design** with gradient colors and smooth interactions
-- 📱 **Responsive Layout** works on all screen sizes
-
-## 🎯 Common Workflows
-
-### Weekly Team Report
-```bash
-# Export incidents from last week in ServiceNow
-# Then generate HTML report for email
-python main.py --input weekly_incidents.csv --format html
-```
-
-### Monthly Analysis
-```bash
-# Export all team incidents from last month
-# Generate all formats for analysis
-python main.py --input monthly_incidents.csv --format all
-```
-
-### Quick Status Update
-```bash
-# Export your current open incidents
-# Generate quick HTML report
-python main.py --input my_open_incidents.csv
-```
+---
 
 ## 📁 Project Structure
 
 ```
 servicenow-rpt/
-├── main.py                 # Main script - run this
-├── report_generator.py     # Report generation logic
-├── demo_mode.py           # Demo data for testing
-├── requirements.txt       # Python dependencies
-├── README.md             # This file
-└── reports/              # Output directory (auto-created)
+├── main.py                  # HTML report generator (local file output)
+├── servicenow_downloader.py # Downloads CSV + triggers weekly report email
+├── send_email.py            # Builds and sends the weekly report email
+├── alert_new_incidents.py   # New-state incident alert email with WW on-call
+├── incident_analyzer.py     # Incident analytics and statistics
+├── report_generator.py      # HTML report template engine
+├── requirements.txt         # Python dependencies
+├── config_sharepoint.json   # Recipient config (gitignored — create locally)
+├── README.md
+└── reports/
+    ├── Incidents_list.csv   # Current incident export (place here)
+    └── 2025_data.csv        # Prior year data for YoY comparison
 ```
-
-## 🔧 Configuration
-
-### Custom Output Directory
-
-Create a `.env` file to customize settings:
-
-```ini
-REPORT_OUTPUT_DIR=my_reports
-```
-
-## 💡 Tips & Tricks
-
-### Getting Clean Data from ServiceNow
-
-1. **Apply Filters First**: Filter to exactly what you need before exporting
-2. **Select Columns**: Choose relevant columns to reduce file size
-3. **Date Ranges**: Export specific time periods for focused reports
-4. **Save Filters**: Save common filters in ServiceNow for quick exports
-
-### Best Practices
-
-- ✅ Export regularly (weekly/monthly) for trend analysis
-- ✅ Keep CSV files organized by date/team
-- ✅ Use HTML format for presentations and emails
-- ✅ Use Excel format for further analysis
-- ✅ Test with `--demo` before running on real data
-
-## 🎬 Demo Mode
-
-Want to see what the reports look like? Use demo mode:
-
-```bash
-python main.py --demo --format all
-```
-
-This generates sample reports without needing real ServiceNow data.
-
-## 🐛 Troubleshooting
-
-### "File not found" Error
-- Check the file path is correct
-- Use absolute path: `python main.py --input C:\Users\...\incidents.csv`
-- Make sure the CSV file exists
-
-### "No incidents found"
-- Check the CSV file isn't empty
-- Verify it's a valid ServiceNow export
-- Try opening in Excel to check formatting
-
-### HTML Report Doesn't Open
-- Right-click the file → Open with → Browser
-- Or double-click the `.html` file
-
-## 🤝 Contributing
-
-Have ideas for better reports? Feel free to enhance this tool!
-
-## 📄 License
-
-This project is open source and available for personal and team use.
 
 ---
 
-**Made with ❤️ for better incident reporting**
+## 🔒 Security Notes
+
+- `config_sharepoint.json` is gitignored — never commit it
+- Session files (`.servicenow_session.json`, `.wiki_session.json`, etc.) are gitignored
+- Outlook sends email using your signed-in identity — no credentials are stored
+
+---
+
+## 🐛 Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| `❌ pywin32 not installed` | Run `pip install pywin32` then re-register with `pywin32_postinstall.py -install` |
+| `❌ No recipients in config_sharepoint.json` | Create the file with an `email.recipients` list |
+| `⚠️ Wiki fetch failed` | Check Intel VPN / network, or run with `--no-wiki` |
+| `❌ Incidents_list.csv not found` | Export from ServiceNow and place at `reports/Incidents_list.csv` |
+| Outlook not sending | Make sure Outlook desktop is open and signed in before running |
+
+---
+
+**Maintained by CDS ROR team**
