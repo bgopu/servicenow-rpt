@@ -625,6 +625,11 @@ class ReportGenerator:
             margin-bottom: 12px;
             font-size: 15px;
         }
+        .summary-box ul + h3 {
+            margin-top: 14px;
+            padding-top: 12px;
+            border-top: 1px solid #e5e7eb;
+        }
         .summary-box ul {
             list-style: none;
         }
@@ -633,7 +638,14 @@ class ReportGenerator:
             border-bottom: 1px solid #eee;
             display: flex;
             justify-content: space-between;
+            align-items: center;
             font-size: 13px;
+            gap: 8px;
+        }
+        .summary-box li span:first-child {
+            flex: 1;
+            min-width: 0;
+            word-break: break-word;
         }
         .summary-box li:last-child {
             border-bottom: none;
@@ -641,6 +653,7 @@ class ReportGenerator:
         .summary-box li span:last-child {
             font-weight: bold;
             color: #7a8ee5;
+            white-space: nowrap;
         }
         .table-container {
             overflow-x: hidden;
@@ -656,22 +669,19 @@ class ReportGenerator:
         table td, table th {
             word-wrap: break-word;
             overflow-wrap: break-word;
-            white-space: nowrap;
+            white-space: normal;
             overflow: hidden;
-            text-overflow: ellipsis;
             vertical-align: top;
         }
         /* Headers can wrap to avoid clipping */
         table th {
             white-space: normal;
         }
-        /* Short description: 2-line clamp */
+        /* Short description: full wrap */
         table td.short-desc-col {
             white-space: normal;
-            display: -webkit-box;
-            -webkit-line-clamp: 2;
-            -webkit-box-orient: vertical;
-            overflow: hidden;
+            word-break: break-word;
+            overflow: visible;
         }
         /* Opened date: allow 2-line wrap */
         table td.opened-col {
@@ -751,6 +761,7 @@ class ReportGenerator:
         }
         #domainChart {
             max-width: 500px;
+            height: 380px !important;
             margin: 0 auto;
         }
         .top-domains {
@@ -912,6 +923,17 @@ class ReportGenerator:
             padding: 0 4px;
             vertical-align: middle;
             margin-left: 3px;
+            white-space: nowrap;
+        }
+        .adf-no-match {
+            display: inline-block;
+            font-size: 10px;
+            font-weight: 600;
+            color: #92400e;
+            background: #fef3c7;
+            border: 1px solid #fbbf24;
+            border-radius: 4px;
+            padding: 2px 7px;
             white-space: nowrap;
         }
         .adf-object {
@@ -1136,7 +1158,9 @@ class ReportGenerator:
                 {% if domain_labels %}
                 <div class="chart-container">
                     <h3>📊 Domain Distribution</h3>
-                    <canvas id="domainChart"></canvas>
+                    <div style="position: relative; height: 380px;">
+                        <canvas id="domainChart"></canvas>
+                    </div>
                 </div>
                 {% endif %}
                 
@@ -1153,9 +1177,18 @@ class ReportGenerator:
             <div class="summary-section">
                 <h2>📈 Summary Statistics &nbsp;&nbsp;|&nbsp;&nbsp; <span onclick="clearAllFilters()" style="cursor: pointer; color: #5d8fc7;" title="Click to show all incidents">📊 Total Incidents: {{ summary.total_incidents }}</span></h2>
                 <div class="summary-grid">
-                    {% if summary.breach_stats and summary.breach_stats.total_breached > 0 %}
-                    <div class="summary-box" onclick="filterByBreach()" style="cursor: pointer; background: linear-gradient(135deg, #fff5f5 0%, #ffebee 100%); border-left: 4px solid #e74c3c;" title="Click to show breached incidents only">
-                        <h3>🚨 Breach Statistics</h3>
+                    <div class="summary-box">
+                        <h3>By Category</h3>
+                        <ul id="categoryFilterList">
+                            <li onclick="filterByCategory('IAO')" style="cursor:pointer;" title="Click to filter IAO incidents">
+                                <span style="font-weight:700;color:#7c3aed;">IAO</span><span id="iaoCount">—</span>
+                            </li>
+                            <li onclick="filterByCategory('Non IAO')" style="cursor:pointer;" title="Click to filter Non IAO incidents">
+                                <span style="font-weight:700;color:#0284c7;">Non IAO</span><span id="nonIaoCount">—</span>
+                            </li>
+                        </ul>
+                        {% if summary.breach_stats and summary.breach_stats.total_breached > 0 %}
+                        <h3 onclick="filterByBreach()" style="cursor:pointer;color:#e74c3c;" title="Click to show breached incidents only">🚨 Breach Statistics</h3>
                         <ul>
                             <li>
                                 <span>Total Breached</span><span>{{ summary.breach_stats.total_breached }}</span>
@@ -1169,9 +1202,9 @@ class ReportGenerator:
                             </li>
                             {% endif %}
                         </ul>
+                        {% endif %}
                     </div>
-                    {% endif %}
-                    
+
                     {% if summary.recurrence and summary.recurrence.top_recurring %}
                     <div class="summary-box">
                         <h3>🔄 Top Recurring Jobs</h3>
@@ -1184,9 +1217,10 @@ class ReportGenerator:
                         </ul>
                     </div>
                     {% endif %}
-                    
-                    {% if summary.by_state %}
+
+                    {% if summary.by_state or summary.by_priority %}
                     <div class="summary-box">
+                        {% if summary.by_state %}
                         <h3>By State</h3>
                         <ul>
                         {% for state, count in summary.by_state.items() %}
@@ -1195,11 +1229,8 @@ class ReportGenerator:
                             </li>
                         {% endfor %}
                         </ul>
-                    </div>
-                    {% endif %}
-                    
-                    {% if summary.by_priority %}
-                    <div class="summary-box">
+                        {% endif %}
+                        {% if summary.by_priority %}
                         <h3>By Priority</h3>
                         <ul>
                         {% for priority, count in summary.by_priority.items() %}
@@ -1208,9 +1239,10 @@ class ReportGenerator:
                             </li>
                         {% endfor %}
                         </ul>
+                        {% endif %}
                     </div>
                     {% endif %}
-                    
+
                     {% if summary.by_assignment_group %}
                     <div class="summary-box">
                         <h3>By Assignment Group (Top 10)</h3>
@@ -1223,18 +1255,6 @@ class ReportGenerator:
                         </ul>
                     </div>
                     {% endif %}
-
-                    <div class="summary-box">
-                        <h3>By Category</h3>
-                        <ul id="categoryFilterList">
-                            <li onclick="filterByCategory('IAO')" style="cursor:pointer;" title="Click to filter IAO incidents">
-                                <span style="font-weight:700;color:#7c3aed;">IAO</span><span id="iaoCount">—</span>
-                            </li>
-                            <li onclick="filterByCategory('Non IAO')" style="cursor:pointer;" title="Click to filter Non IAO incidents">
-                                <span style="font-weight:700;color:#0284c7;">Non IAO</span><span id="nonIaoCount">—</span>
-                            </li>
-                        </ul>
-                    </div>
                 </div>
             </div>
             {% endif %}
@@ -1331,7 +1351,7 @@ class ReportGenerator:
             },
             options: {
                 responsive: true,
-                maintainAspectRatio: true,
+                maintainAspectRatio: false,
                 onClick: (event, activeElements) => {
                     if (activeElements.length > 0) {
                         const index = activeElements[0].index;
@@ -1630,9 +1650,9 @@ class ReportGenerator:
                     // Count breached & accumulate breach time
                     if (row.getAttribute('data-breached') === 'true') {
                         stats.breached++;
-                        const rowIdx = parseInt(row.getAttribute('data-row-index'));
-                        if (!isNaN(rowIdx) && rowIdx < breachTimeByRow.length && breachTimeByRow[rowIdx] > 0) {
-                            totalBreachTime += breachTimeByRow[rowIdx];
+                        const bt = parseFloat(row.getAttribute('data-breach-time') || '0');
+                        if (bt > 0) {
+                            totalBreachTime += bt;
                             breachTimeCount++;
                         }
                     }
@@ -1776,26 +1796,25 @@ class ReportGenerator:
             if (iaoSpan) iaoSpan.textContent = stats.category['IAO'] || 0;
             if (nonIaoSpan) nonIaoSpan.textContent = stats.category['Non IAO'] || 0;
             
-            // Update Breach Statistics box
-            const allBoxes = document.querySelectorAll('.summary-box');
-            allBoxes.forEach(box => {
-                const h3 = box.querySelector('h3');
-                if (h3 && h3.textContent.includes('Breach Statistics')) {
-                    const lis = box.querySelectorAll('li');
-                    const breachRate = stats.total > 0 ? ((stats.breached / stats.total) * 100).toFixed(1) : '0.0';
-                    lis.forEach(li => {
-                        const spans = li.querySelectorAll('span');
-                        if (spans.length >= 2) {
-                            if (spans[0].textContent.includes('Total Breached')) {
-                                spans[1].textContent = stats.breached;
-                            } else if (spans[0].textContent.includes('Breach Rate')) {
-                                spans[1].textContent = breachRate + '%';
-                            } else if (spans[0].textContent.includes('Avg Breach Time')) {
-                                spans[1].textContent = stats.avgBreachTimeHours ? stats.avgBreachTimeHours + 'h' : '—';
-                            }
+            // Update Breach Statistics section (may be merged inside Category box)
+            document.querySelectorAll('.summary-box h3').forEach(h3 => {
+                if (!h3.textContent.includes('Breach Statistics')) return;
+                const breachRate = stats.total > 0 ? ((stats.breached / stats.total) * 100).toFixed(1) : '0.0';
+                // The <ul> immediately after this h3
+                const breachUl = h3.nextElementSibling;
+                if (!breachUl || breachUl.tagName !== 'UL') return;
+                breachUl.querySelectorAll('li').forEach(li => {
+                    const spans = li.querySelectorAll('span');
+                    if (spans.length >= 2) {
+                        if (spans[0].textContent.includes('Total Breached')) {
+                            spans[1].textContent = stats.breached;
+                        } else if (spans[0].textContent.includes('Breach Rate')) {
+                            spans[1].textContent = breachRate + '%';
+                        } else if (spans[0].textContent.includes('Avg Breach Time')) {
+                            spans[1].textContent = stats.avgBreachTimeHours ? stats.avgBreachTimeHours + 'h' : '—';
                         }
-                    });
-                }
+                    }
+                });
             });
             
             // Update By State
@@ -1818,25 +1837,31 @@ class ReportGenerator:
                         li.innerHTML = `<span>${job}</span><span>${count}</span>`;
                         ul.appendChild(li);
                     });
-                } else if (h3.textContent.includes('By State')) {
-                    ul.innerHTML = '';
-                    Object.entries(stats.state).sort((a, b) => b[1] - a[1]).forEach(([state, count]) => {
-                        const li = document.createElement('li');
-                        li.onclick = () => filterByState(state);
-                        li.style.cursor = 'pointer';
-                        li.title = `Click to filter by ${state}`;
-                        li.innerHTML = `<span>${state}</span><span>${count}</span>`;
-                        ul.appendChild(li);
-                    });
-                } else if (h3.textContent.includes('By Priority')) {
-                    ul.innerHTML = '';
-                    Object.entries(stats.priority).sort((a, b) => b[1] - a[1]).forEach(([priority, count]) => {
-                        const li = document.createElement('li');
-                        li.onclick = () => filterByPriority(priority);
-                        li.style.cursor = 'pointer';
-                        li.title = `Click to filter by ${priority}`;
-                        li.innerHTML = `<span>${priority}</span><span>${count}</span>`;
-                        ul.appendChild(li);
+                } else if (h3.textContent.includes('By State') || h3.textContent.includes('By Priority')) {
+                    box.querySelectorAll('h3').forEach(innerH3 => {
+                        const innerUl = innerH3.nextElementSibling;
+                        if (!innerUl || innerUl.tagName !== 'UL') return;
+                        if (innerH3.textContent.includes('By State')) {
+                            innerUl.innerHTML = '';
+                            Object.entries(stats.state).sort((a, b) => b[1] - a[1]).forEach(([state, count]) => {
+                                const li = document.createElement('li');
+                                li.onclick = () => filterByState(state);
+                                li.style.cursor = 'pointer';
+                                li.title = `Click to filter by ${state}`;
+                                li.innerHTML = `<span>${state}</span><span>${count}</span>`;
+                                innerUl.appendChild(li);
+                            });
+                        } else if (innerH3.textContent.includes('By Priority')) {
+                            innerUl.innerHTML = '';
+                            Object.entries(stats.priority).sort((a, b) => b[1] - a[1]).forEach(([priority, count]) => {
+                                const li = document.createElement('li');
+                                li.onclick = () => filterByPriority(priority);
+                                li.style.cursor = 'pointer';
+                                li.title = `Click to filter by ${priority}`;
+                                li.innerHTML = `<span>${priority}</span><span>${count}</span>`;
+                                innerUl.appendChild(li);
+                            });
+                        }
                     });
                 } else if (h3.textContent.includes('By Assignment Group')) {
                     ul.innerHTML = '';
@@ -2224,8 +2249,17 @@ class ReportGenerator:
                             root = (entry.get('root_cause', '') or '').strip()
                             if root:
                                 activities = [{'message': root, 'input': '', 'output': ''}]
-                        if not activities and not pipeline:
-                            return ''
+                        status = (entry.get('status', '') or '').strip()
+                        # No real error details — show status badge + pipeline name
+                        if not activities:
+                            if not status and not pipeline:
+                                return ''
+                            parts = []
+                            if pipeline:
+                                parts.append(f'<div class="adf-pipeline">&#x1F4CC; {_html_mod.escape(pipeline)}</div>')
+                            if status:
+                                parts.append(f'<span class="adf-no-match" style="margin-top:4px;display:inline-block;">&#x26A0; {_html_mod.escape(status)}</span>')
+                            return '<div class="adf-error-cell" style="background:#fffbeb;border-left-color:#fbbf24;color:#92400e;">' + ''.join(parts) + '</div>'
                         parts = []
                         if pipeline:
                             parts.append(f'<div class="adf-pipeline">&#x1F4CC; {_html_mod.escape(pipeline)}</div>')
@@ -2420,6 +2454,9 @@ class ReportGenerator:
 
                 # Add data-row-index to track original position for Excel export
                 tr['data-row-index'] = i
+                # Embed breach time directly so JS doesn't need index lookup
+                if i < len(breach_time_hours_list) and breach_time_hours_list[i] > 0:
+                    tr['data-breach-time'] = breach_time_hours_list[i]
 
                 # Mark wrap columns so CSS can apply white-space: normal
                 for wi in wrap_col_indices:
