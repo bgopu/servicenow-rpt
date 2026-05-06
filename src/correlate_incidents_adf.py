@@ -145,9 +145,9 @@ def find_best_adf_match(adf_runs: list, pipeline_name: str, incident_time) -> di
     return best
 
 
-def _append_to_excel(xlsx_path: Path, rows: list):
+def _append_to_excel(xlsx_path: Path, rows: list, refresh_from: list | None = None):
     """Append rows to the persistent Excel file, skipping duplicates by (incident, adf_run_id, failed_activities)."""
-    if not rows:
+    if not rows and not refresh_from:
         return
     # We need EXCEL_HEADERS — define the minimal set needed here inline
     from openpyxl.utils import get_column_letter as _gcl
@@ -197,7 +197,25 @@ def _append_to_excel(xlsx_path: Path, rows: list):
         if key not in existing_keys:
             new_rows.append(row)
             existing_keys.add(key)
-    if not new_rows:
+
+    # Refresh mutable fields (state, priority, assignment_group) from incoming rows
+    _MUTABLE = ("state", "priority", "assignment_group", "assigned_to")
+    _refresh_source = refresh_from if refresh_from is not None else rows
+    _latest_state = {}
+    for row in _refresh_source:
+        inc = str(row.get("incident", "") or "")
+        if inc and inc not in _latest_state:
+            _latest_state[inc] = {f: row.get(f, "") for f in _MUTABLE}
+    any_updated = False
+    for row in existing_rows:
+        inc = str(row.get("incident", "") or "")
+        if inc in _latest_state:
+            for f in _MUTABLE:
+                if str(row.get(f) or "") != str(_latest_state[inc].get(f) or ""):
+                    row[f] = _latest_state[inc][f]
+                    any_updated = True
+
+    if not new_rows and not any_updated:
         return
     all_rows = existing_rows + new_rows
     xlsx_path.parent.mkdir(exist_ok=True)
@@ -219,10 +237,10 @@ def _append_to_excel(xlsx_path: Path, rows: list):
     for row in all_rows:
         inc = str(row.get("incident", "") or "")
         inc_groups.setdefault(inc, []).append(row)
+    all_rows.sort(key=lambda r: str(r.get("opened_at", "") or ""), reverse=True)
     summary_fill_even = PatternFill("solid", fgColor="BDD7EE")
     summary_fill_odd  = PatternFill("solid", fgColor="DEEAF1")
     detail_fill       = PatternFill("solid", fgColor="F2F2F2")
-    summary_font_bold = Font(bold=True)
     ws.sheet_properties.outlinePr.summaryBelow = False
     row_idx = 2
     for inc_num, (inc, rows) in enumerate(inc_groups.items()):
@@ -231,7 +249,6 @@ def _append_to_excel(xlsx_path: Path, rows: list):
         for col_idx, (label, field, _) in enumerate(EXCEL_HEADERS, start=1):
             cell = ws.cell(row=row_idx, column=col_idx, value=summary.get(field, ""))
             cell.fill = s_fill
-            cell.font = summary_font_bold
             cell.alignment = Alignment(vertical="top", wrap_text=(label in WRAP_FROM))
         ws.row_dimensions[row_idx].outline_level = 0
         row_idx += 1
@@ -396,10 +413,18 @@ def run_correlation(days_back: int = 7):
 
     if new_job_fail.empty:
         print("No new recent incidents — no ADF queries needed.\n")
-        # Still append older_rows and refresh JSON
+        # Build state-refresh rows from all recent incidents (already processed)
+        # so _append_to_excel can update state/priority/assignment_group
+        _recent_state_refresh = [
+            {"incident": str(inc["number"]), "state": inc.get("state", ""),
+             "priority": inc.get("priority", ""),
+             "assignment_group": inc.get("assignment_group", ""),
+             "assigned_to": inc.get("assigned_to", "")}
+            for _, inc in job_fail_recent.iterrows()
+        ]
         _csv_rows_extra = older_rows
-        if _csv_rows_extra:
-            _append_to_excel(_out_xlsx, _csv_rows_extra)
+        if _csv_rows_extra or _recent_state_refresh:
+            _append_to_excel(_out_xlsx, _csv_rows_extra, refresh_from=_recent_state_refresh + _csv_rows_extra)
         _emit_adf_json_from_excel(_out_xlsx)
         return
 
@@ -651,6 +676,19 @@ def run_correlation(days_back: int = 7):
                 new_rows.append(row)
                 existing_keys.add(key)
 
+        # Build latest-state lookup from current CSV data (incident → mutable fields)
+        # so existing Excel rows get refreshed state/priority/assignment_group
+        _MUTABLE = ("state", "priority", "assignment_group", "assigned_to")
+        _latest = {}
+        for row in (csv_rows + older_rows):
+            inc = str(row.get("incident", "") or "")
+            if inc and inc not in _latest:
+                _latest[inc] = {f: row.get(f, "") for f in _MUTABLE}
+        for row in existing_rows:
+            inc = str(row.get("incident", "") or "")
+            if inc in _latest:
+                row.update(_latest[inc])
+
         all_rows = existing_rows + new_rows
 
         wb = openpyxl.Workbook()
@@ -683,11 +721,23 @@ def run_correlation(days_back: int = 7):
                 incidents_order.append(inc)
             inc_groups[inc].append(row)
 
+        # Sort all rows newest first before grouping
+        all_rows.sort(key=lambda r: str(r.get("opened_at", "") or ""), reverse=True)
+
+        # Re-build inc_groups after sort so order is newest-first
+        incidents_order = []
+        inc_groups = OrderedDict()
+        for row in all_rows:
+            inc = str(row.get("incident", "") or "")
+            if inc not in inc_groups:
+                inc_groups[inc] = []
+                incidents_order.append(inc)
+            inc_groups[inc].append(row)
+
         # Summary fills: alternating per incident block
         summary_fill_even = PatternFill("solid", fgColor="BDD7EE")   # soft blue summary
         summary_fill_odd  = PatternFill("solid", fgColor="DEEAF1")   # lighter blue summary
         detail_fill       = PatternFill("solid", fgColor="F2F2F2")   # light grey detail
-        summary_font_bold = Font(bold=True)
 
         # Outline control: summary row ABOVE detail rows
         ws.sheet_properties.outlinePr.summaryBelow = False
@@ -701,7 +751,6 @@ def run_correlation(days_back: int = 7):
             for col_idx, (label, field, _) in enumerate(EXCEL_HEADERS, start=1):
                 cell = ws.cell(row=row_idx, column=col_idx, value=summary.get(field, ""))
                 cell.fill = s_fill
-                cell.font = summary_font_bold
                 cell.alignment = Alignment(vertical="top", wrap_text=(label in WRAP_FROM))
             ws.row_dimensions[row_idx].outline_level = 0
             row_idx += 1

@@ -1298,6 +1298,25 @@ class ReportGenerator:
                     <button onclick="downloadExcel()" style="padding: 10px 20px; background: #28a745; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px;">
                         <span>📥</span> Download Excel
                     </button>
+
+                    <!-- Download All Incidents (ADF Excel log) -->
+                    {% if adf_xlsx_b64 %}
+                    <button onclick="downloadAdfExcel()" style="padding: 10px 20px; background: #0071c5; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px;">
+                        <span>📊</span> Download All Incidents
+                    </button>
+                    <script>
+                    function downloadAdfExcel() {
+                        const b64 = '{{ adf_xlsx_b64 }}';
+                        const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+                        const blob = new Blob([bytes], {type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+                        const a = document.createElement('a');
+                        a.href = URL.createObjectURL(blob);
+                        a.download = 'incidents_to_adf_job_failures.xlsx';
+                        a.click();
+                        URL.revokeObjectURL(a.href);
+                    }
+                    </script>
+                    {% endif %}
                     
                     <!-- ServiceNow Link Box -->
                     <div style="background-color: #fff3cd; padding: 12px 20px; border-radius: 8px; border-left: 5px solid #ffc107; border: 1px solid #ffeaa7; flex-shrink: 0;">
@@ -2553,6 +2572,14 @@ class ReportGenerator:
         _q = (_now.month - 1) // 3 + 1
         default_quarter = f"{_now.year}-q{_q}"
 
+        # Embed ADF Excel log as base64 for the Download All Incidents button
+        import base64 as _b64
+        _adf_xlsx_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'logs', 'incidents_to_adf_job_failures.xlsx')
+        _adf_xlsx_b64 = ''
+        if os.path.exists(_adf_xlsx_path):
+            with open(_adf_xlsx_path, 'rb') as _xf:
+                _adf_xlsx_b64 = _b64.b64encode(_xf.read()).decode('ascii')
+
         html_content = template.render(
             timestamp=datetime.now().strftime('%B %d, %Y at %I:%M %p'),
             summary=summary,
@@ -2565,7 +2592,8 @@ class ReportGenerator:
             ytd_2026=ytd_2026,
             job_names=job_names,
             default_quarter=default_quarter,
-            breach_time_hours_list=json.dumps(breach_time_hours_list)
+            breach_time_hours_list=json.dumps(breach_time_hours_list),
+            adf_xlsx_b64=_adf_xlsx_b64
         )
         
         with open(filepath, 'w', encoding='utf-8') as f:
